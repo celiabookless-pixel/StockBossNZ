@@ -1,51 +1,70 @@
 import { useState, useRef, useEffect } from 'react';
-import { getListings, saveAllListings, getMessages, saveMessage, uploadPhoto } from './supabase';
+import { getListings, saveAllListings, getMessages, saveMessage, uploadPhoto, deleteListing, getBuyers, saveBuyer, deleteBuyer } from './supabase';
 
 const SYSTEM_PROMPT = `You are StockBossNZ, a smart livestock matching AI for stock agents in New Zealand and Australia. Respond ONLY with raw JSON, no markdown, no backticks, no explanation.
 
 JSON shape:
 {
-  "action": "add" or "sell" or "query" or "price_estimate" or "chat",
-  "message": "plain English reply to show the user",
-  "listings": [ full updated listings array - only include when action is add or sell ],
-  "results": [ matching listing ids - only include when action is query ],
+  "action": "add_stock" or "sell_stock" or "query_stock" or "add_buyer" or "query_buyers" or "price_estimate" or "chat",
+  "message": "plain English reply",
+  "listings": [ full updated listings array - only when action is add_stock or sell_stock ],
+  "buyers": [ full updated buyers array - only when action is add_buyer ],
+  "results": [ matching listing ids - only when action is query_stock ],
+  "buyer_results": [ matching buyer ids - only when action is query_buyers ],
   "estimate": { "low": number, "mid": number, "high": number, "reasoning": "string" } - only when action is price_estimate
 }
 
-Listing shape:
+Stock listing shape:
 {
-  "id": "lst_" plus unix timestamp e.g. lst_1700000001,
-  "seller": "name only",
-  "sellerPhone": "phone number if mentioned, else null",
-  "buyer": "buyer name if sold, else null",
-  "buyerPhone": "buyer phone if mentioned, else null",
-  "breed": "e.g. Angus, Friesian, Hereford, Murray Grey, Merino",
+  "id": "lst_" plus unix timestamp,
+  "seller": "name",
+  "sellerPhone": "phone or null",
+  "buyer": "buyer name if sold or null",
+  "buyerPhone": "phone or null",
+  "breed": "e.g. Angus, Friesian, Hereford, Merino",
   "category": "steers or heifers or cows or bulls or calves or ewes or rams or lambs or wethers or other",
-  "age": "e.g. R2, R3, Weaner, 18mo",
+  "age": "e.g. R2, R3, Weaner",
   "weightKg": number or null,
-  "condition": "e.g. Good, Store, Fat, Backgrounder",
-  "location": "property or town name",
-  "trucking": "trucking notes e.g. owner can truck, needs arranging",
-  "nature": "e.g. quiet, flighty, PTIC, joined",
+  "condition": "e.g. Good, Store, Fat",
+  "location": "town or property",
+  "trucking": "notes or null",
+  "nature": "e.g. quiet, PTIC or null",
   "quantity": number,
   "quantitySold": number,
   "pricePerHead": number or null,
   "centsPerKg": number or null,
-  "notes": "any other info",
+  "notes": "any info or null",
   "photoUrl": null,
-  "dateAdded": "ISO date string",
-  "dateSold": null or "ISO date string",
-  "status": "available or partial or sold"
+  "dateAdded": "ISO string",
+  "dateSold": null or "ISO string",
+  "status": "available or partial or sold or matched"
+}
+
+Buyer request shape:
+{
+  "id": "buy_" plus unix timestamp,
+  "name": "buyer name",
+  "phone": "phone or null",
+  "breed": "e.g. Angus",
+  "category": "steers or heifers etc",
+  "age": "e.g. R2 or null",
+  "quantity": number or null,
+  "maxPricePerHead": number or null,
+  "notes": "any info or null",
+  "dateAdded": "ISO string",
+  "status": "looking or matched or inactive"
 }
 
 Rules:
-- add: create new listing with unique id using current timestamp
-- sell: update quantitySold, set dateSold, status = partial if some remain, sold if all gone. Return full listings array.
-- query: find available/partial listings matching the request. Return ids of best matches.
-- price_estimate: look at sold listings to estimate price range. Return estimate with low/mid/high and reasoning.
-- Always return the FULL listings array on add or sell.
-- Extract as much detail as possible from natural language.
-- If weight mentioned calculate centsPerKg if price also given.`;
+- add_stock: new listing from seller info
+- sell_stock: mark stock as sold or partial, update quantitySold, dateSold, buyer info
+- query_stock: find available/partial/matched listings matching request - quantity is flexible, partial matches are fine
+- add_buyer: new buyer request
+- query_buyers: find looking buyers that match available stock
+- price_estimate: estimate from sold listings history, use actualSalePrice if available as it is more accurate than pricePerHead
+- Always return FULL array on add/sell/update actions
+- Be flexible with quantity matching - buyer wanting 60 from a mob of 100 is still a match
+- Extract as much detail as possible from natural language`;
 
 const CAT_COLORS = {
   steers: '#2d6a4f', heifers: '#40916c', cows: '#52b788',
@@ -53,23 +72,24 @@ const CAT_COLORS = {
   rams: '#4e342e', lambs: '#a1887f', wethers: '#8d6e63', other: '#78909c'
 };
 
-function getBadge(status, qty, sold) {
+function getBadge(status) {
   if (status === 'sold') return { label: 'SOLD', color: '#c0392b' };
-  if (status === 'partial') return { label: (qty - sold) + ' LEFT', color: '#e67e22' };
+  if (status === 'matched') return { label: 'MATCHED', color: '#8e44ad' };
+  if (status === 'partial') return { label: 'PARTIAL', color: '#e67e22' };
   return { label: 'AVAILABLE', color: '#27ae60' };
 }
 
-async function askClaude(userMsg, listings) {
+async function askClaude(userMsg, listings, buyers) {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: 'claude-sonnet-4-5',
-      max_tokens: 1500,
+      max_tokens: 2000,
       system: SYSTEM_PROMPT,
       messages: [{
         role: 'user',
-        content: 'Current date: ' + new Date().toISOString() + '\nDatabase: ' + JSON.stringify(listings) + '\n\nMessage: ' + userMsg
+        content: 'Date: ' + new Date().toISOString() + '\nStock: ' + JSON.stringify(listings) + '\nBuyers: ' + JSON.stringify(buyers) + '\n\nMessage: ' + userMsg
       }]
     })
   });
@@ -82,25 +102,50 @@ async function askClaude(userMsg, listings) {
   return JSON.parse(raw);
 }
 
+function findMatches(listings, buyers) {
+  var matches = [];
+  buyers.filter(function(b) { return b.status === 'looking'; }).forEach(function(buyer) {
+    listings.filter(function(l) { return l.status === 'available' || l.status === 'partial'; }).forEach(function(listing) {
+      var score = 0;
+      if (buyer.breed && listing.breed && listing.breed.toLowerCase().includes(buyer.breed.toLowerCase())) score += 3;
+      if (buyer.category && listing.category && buyer.category === listing.category) score += 3;
+      if (buyer.age && listing.age && listing.age.toLowerCase().includes(buyer.age.toLowerCase())) score += 2;
+      if (score >= 3) {
+        matches.push({ buyerId: buyer.id, listingId: listing.id, score: score, buyer: buyer, listing: listing });
+      }
+    });
+  });
+  return matches;
+}
+
 export default function App() {
-  const [listings, setListings] = useState([]);
-  const [msgs, setMsgs] = useState([]);
-  const [input, setInput] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [tab, setTab] = useState('chat');
-  const [matches, setMatches] = useState(null);
-  const [err, setErr] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [filterCat, setFilterCat] = useState('all');
-  const [notification, setNotification] = useState(null);
-  const bottom = useRef(null);
-  const fileRef = useRef(null);
+  var [listings, setListings] = useState([]);
+  var [buyers, setBuyers] = useState([]);
+  var [msgs, setMsgs] = useState([]);
+  var [input, setInput] = useState('');
+  var [busy, setBusy] = useState(false);
+  var [tab, setTab] = useState('chat');
+  var [err, setErr] = useState(null);
+  var [loading, setLoading] = useState(true);
+  var [notification, setNotification] = useState(null);
+  var [confirmDelete, setConfirmDelete] = useState(null);
+  var [confirmDeleteBuyer, setConfirmDeleteBuyer] = useState(null);
+  var [sellModal, setSellModal] = useState(null);
+  var [sellQty, setSellQty] = useState('');
+  var [sellBuyer, setSellBuyer] = useState('');
+  var [sellPrice, setSellPrice] = useState('');
+  var [filterCat, setFilterCat] = useState('all');
+  var bottom = useRef(null);
+  var fileRef = useRef(null);
 
   useEffect(function() {
     async function load() {
       try {
-        const [ls, ms] = await Promise.all([getListings(), getMessages()]);
-        const mapped = ls.map(function(l) {
+        var results = await Promise.all([getListings(), getBuyers(), getMessages()]);
+        var ls = results[0];
+        var bs = results[1];
+        var ms = results[2];
+        var mapped = ls.map(function(l) {
           return {
             id: l.id, seller: l.seller, sellerPhone: l.seller_phone,
             buyer: l.buyer, buyerPhone: l.buyer_phone,
@@ -109,18 +154,28 @@ export default function App() {
             location: l.location, trucking: l.trucking, nature: l.nature,
             quantity: l.quantity, quantitySold: l.quantity_sold,
             pricePerHead: l.price_per_head, centsPerKg: l.cents_per_kg,
+            actualSalePrice: l.actual_sale_price,
             notes: l.notes, photoUrl: l.photo_url,
             dateAdded: l.date_added, dateSold: l.date_sold, status: l.status
           };
         });
+        var mappedBuyers = bs.map(function(b) {
+          return {
+            id: b.id, name: b.name, phone: b.phone,
+            breed: b.breed, category: b.category, age: b.age,
+            quantity: b.quantity, maxPricePerHead: b.max_price_per_head,
+            notes: b.notes, dateAdded: b.date_added, status: b.status
+          };
+        });
         setListings(mapped);
+        setBuyers(mappedBuyers);
         if (ms.length > 0) {
           setMsgs(ms);
         } else {
-          setMsgs([{ from: 'ai', text: "G'day! I'm StockBossNZ — your smart livestock matching assistant. Tell me what stock is for sale, e.g. 'Pete has 80 Angus R2 steers, 420kg, good condition, Hawke's Bay, $1100/hd' — or ask what's available, or ask for a price estimate.", extra: null }]);
+          setMsgs([{ from: 'ai', text: "G'day! I'm StockBossNZ. Tell me what stock is for sale — e.g. 'Pete has 80 Angus R2 steers, $1100/hd Hawkes Bay' — or add a buyer — e.g. 'Johnson looking for 60 Friesian R2 steers up to $900'. I'll find matches automatically!", extra: null }]);
         }
       } catch(e) {
-        setErr('Could not load data: ' + e.message);
+        setErr('Could not load: ' + e.message);
       }
       setLoading(false);
     }
@@ -137,83 +192,161 @@ export default function App() {
   }
 
   async function send(overrideInput) {
-    const msg = (overrideInput || input).trim();
+    var msg = (overrideInput || input).trim();
     if (!msg || busy) return;
     setInput('');
     setErr(null);
-    setMatches(null);
-    const userMsg = { from: 'user', text: msg, extra: null };
-    const newMsgs = msgs.concat([userMsg]);
+    var userMsg = { from: 'user', text: msg, extra: null };
+    var newMsgs = msgs.concat([userMsg]);
     setMsgs(newMsgs);
     await saveMessage(userMsg);
     setBusy(true);
     try {
-      const result = await askClaude(msg, listings);
-      let updatedListings = listings;
+      var result = await askClaude(msg, listings, buyers);
+      var updatedListings = listings;
+      var updatedBuyers = buyers;
       if (result.listings) {
         updatedListings = result.listings;
         setListings(updatedListings);
         await saveAllListings(updatedListings);
-        if (result.action === 'add') {
-          showNotification('New stock added to database!');
+      }
+      if (result.buyers) {
+        updatedBuyers = result.buyers;
+        setBuyers(updatedBuyers);
+        for (var i = 0; i < updatedBuyers.length; i++) {
+          await saveBuyer(updatedBuyers[i]);
         }
       }
-      if (result.action === 'query' && result.results) {
-        setMatches(result.results);
+      if (result.action === 'add_stock') {
+        showNotification('Stock added!');
         setTab('stock');
+        var matches = findMatches(updatedListings, updatedBuyers);
+        if (matches.length > 0) {
+          var matchMsg = { from: 'ai', text: 'Heads up! Found ' + matches.length + ' potential match' + (matches.length > 1 ? 'es' : '') + ' with buyers on your list. Check the Matches tab!', extra: null };
+          newMsgs = newMsgs.concat([{ from: 'ai', text: result.message || 'Done.', extra: result.estimate || null }]);
+          setMsgs(newMsgs.concat([matchMsg]));
+          await saveMessage(matchMsg);
+          setBusy(false);
+          return;
+        }
       }
-      if (result.action === 'add' || result.action === 'sell') setTab('stock');
-      const aiMsg = { from: 'ai', text: result.message || 'Done.', extra: result.estimate || null };
+      if (result.action === 'add_buyer') {
+        showNotification('Buyer added!');
+        setTab('buyers');
+        var matches2 = findMatches(updatedListings, updatedBuyers);
+        if (matches2.length > 0) {
+          var matchMsg2 = { from: 'ai', text: 'Great news! Found ' + matches2.length + ' potential match' + (matches2.length > 1 ? 'es' : '') + ' in current stock. Check the Matches tab!', extra: null };
+          newMsgs = newMsgs.concat([{ from: 'ai', text: result.message || 'Done.', extra: null }]);
+          setMsgs(newMsgs.concat([matchMsg2]));
+          await saveMessage(matchMsg2);
+          setBusy(false);
+          return;
+        }
+      }
+      if (result.action === 'sell_stock') setTab('sold');
+      var aiMsg = { from: 'ai', text: result.message || 'Done.', extra: result.estimate || null };
       setMsgs(newMsgs.concat([aiMsg]));
       await saveMessage(aiMsg);
     } catch(e) {
       setErr(e.message || 'Unknown error');
-      const errMsg = { from: 'ai', text: 'Error: ' + (e.message || 'Unknown error'), extra: null };
-      setMsgs(newMsgs.concat([errMsg]));
+      setMsgs(newMsgs.concat([{ from: 'ai', text: 'Error: ' + (e.message || 'Unknown error'), extra: null }]));
     }
     setBusy(false);
   }
 
   async function handlePhoto(e) {
-    const file = e.target.files[0];
+    var file = e.target.files[0];
     if (!file) return;
     setBusy(true);
     try {
       await uploadPhoto(file);
-      showNotification('Photo uploaded! Mention it when adding stock.');
+      showNotification('Photo uploaded!');
     } catch(e) {
-      setErr('Photo upload failed: ' + e.message);
+      setErr('Upload failed: ' + e.message);
     }
     setBusy(false);
   }
 
   function exportData() {
-    const json = JSON.stringify(listings, null, 2);
-    const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
+    var json = JSON.stringify({ listings: listings, buyers: buyers }, null, 2);
+    var blob = new Blob([json], { type: 'application/json' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
     a.href = url;
     a.download = 'stockbossnz_export_' + new Date().toISOString().split('T')[0] + '.json';
     a.click();
   }
 
-  const available = listings.filter(function(l) { return l.status !== 'sold'; });
-  const sold = listings.filter(function(l) { return l.status === 'sold'; });
-  const categories = ['all'].concat([...new Set(available.map(function(l) { return l.category; }).filter(Boolean))]);
-
-  let shown = matches
-    ? listings.filter(function(l) { return matches.indexOf(l.id) !== -1; })
-    : tab === 'sold' ? sold : available;
-
-  if (tab === 'stock' && filterCat !== 'all') {
-    shown = shown.filter(function(l) { return l.category === filterCat; });
+  async function handleDeleteListing(id) {
+    try {
+      await deleteListing(id);
+      setListings(listings.filter(function(l) { return l.id !== id; }));
+      setConfirmDelete(null);
+      showNotification('Listing deleted.');
+    } catch(e) {
+      setErr('Delete failed: ' + e.message);
+    }
   }
 
-  const totalHead = available.reduce(function(a, l) { return a + (l.quantity - (l.quantitySold || 0)); }, 0);
-  const soldWithPrice = sold.filter(function(l) { return l.pricePerHead; });
-  const avgPrice = soldWithPrice.length > 0
-    ? Math.round(soldWithPrice.reduce(function(a, l) { return a + l.pricePerHead; }, 0) / soldWithPrice.length)
-    : null;
+  async function handleDeleteBuyer(id) {
+    try {
+      await deleteBuyer(id);
+      setBuyers(buyers.filter(function(b) { return b.id !== id; }));
+      setConfirmDeleteBuyer(null);
+      showNotification('Buyer request deleted.');
+    } catch(e) {
+      setErr('Delete failed: ' + e.message);
+    }
+  }
+
+  async function markMatched(listing) {
+    var updated = listings.map(function(l) {
+      return l.id === listing.id ? Object.assign({}, l, { status: 'matched' }) : l;
+    });
+    setListings(updated);
+    await saveAllListings(updated);
+    showNotification('Marked as matched!');
+  }
+
+  async function saveSell() {
+    if (!sellModal) return;
+    var rem = sellModal.quantity - (sellModal.quantitySold || 0);
+    var qty = sellQty ? parseInt(sellQty) : rem;
+    if (isNaN(qty) || qty <= 0) qty = rem;
+    if (qty > rem) qty = rem;
+    var newSold = (sellModal.quantitySold || 0) + qty;
+    var newStatus = newSold >= sellModal.quantity ? 'sold' : 'partial';
+    var updated = listings.map(function(l) {
+      if (l.id !== sellModal.id) return l;
+      return Object.assign({}, l, {
+        quantitySold: newSold,
+        buyer: sellBuyer || l.buyer || null,
+        actualSalePrice: sellPrice ? parseFloat(sellPrice) : null,
+        dateSold: new Date().toISOString(),
+        status: newStatus
+      });
+    });
+    setListings(updated);
+    await saveAllListings(updated);
+    setSellModal(null);
+    setSellQty('');
+    setSellBuyer('');
+    setSellPrice('');
+    showNotification(qty + ' head marked as sold!');
+    setTab('sold');
+  }
+
+  var available = listings.filter(function(l) { return l.status === 'available' || l.status === 'partial'; });
+  var matched = listings.filter(function(l) { return l.status === 'matched'; });
+  var sold = listings.filter(function(l) { return l.status === 'sold'; });
+  var activeBuyers = buyers.filter(function(b) { return b.status === 'looking'; });
+  var allMatches = findMatches(listings, buyers);
+  var categories = ['all'].concat([...new Set(available.map(function(l) { return l.category; }).filter(Boolean))]);
+
+  var shownStock = tab === 'sold' ? sold : tab === 'matched' ? matched : available;
+  if ((tab === 'stock' || tab === 'matched') && filterCat !== 'all') {
+    shownStock = shownStock.filter(function(l) { return l.category === filterCat; });
+  }
 
   if (loading) {
     return (
@@ -232,6 +365,69 @@ export default function App() {
         </div>
       )}
 
+      {confirmDelete && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+          <div style={{ background: '#fff', borderRadius: 12, padding: 24, maxWidth: 340, width: '100%' }}>
+            <div style={{ fontSize: 16, fontWeight: 'bold', color: '#1a2e1a', marginBottom: 8 }}>Delete this listing?</div>
+            <div style={{ fontSize: 13, color: '#666', marginBottom: 20 }}>This cannot be undone.</div>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button onClick={function() { setConfirmDelete(null); }} style={{ flex: 1, padding: '10px', border: '1px solid #ddd', borderRadius: 8, background: '#fff', cursor: 'pointer', fontFamily: 'Georgia,serif' }}>Cancel</button>
+              <button onClick={function() { handleDeleteListing(confirmDelete); }} style={{ flex: 1, padding: '10px', border: 'none', borderRadius: 8, background: '#c0392b', color: '#fff', cursor: 'pointer', fontFamily: 'Georgia,serif', fontWeight: 'bold' }}>Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmDeleteBuyer && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+          <div style={{ background: '#fff', borderRadius: 12, padding: 24, maxWidth: 340, width: '100%' }}>
+            <div style={{ fontSize: 16, fontWeight: 'bold', color: '#1a2e1a', marginBottom: 8 }}>Delete this buyer request?</div>
+            <div style={{ fontSize: 13, color: '#666', marginBottom: 20 }}>This cannot be undone.</div>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button onClick={function() { setConfirmDeleteBuyer(null); }} style={{ flex: 1, padding: '10px', border: '1px solid #ddd', borderRadius: 8, background: '#fff', cursor: 'pointer', fontFamily: 'Georgia,serif' }}>Cancel</button>
+              <button onClick={function() { handleDeleteBuyer(confirmDeleteBuyer); }} style={{ flex: 1, padding: '10px', border: 'none', borderRadius: 8, background: '#c0392b', color: '#fff', cursor: 'pointer', fontFamily: 'Georgia,serif', fontWeight: 'bold' }}>Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {sellModal && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+          <div style={{ background: '#fff', borderRadius: 12, padding: 24, maxWidth: 400, width: '100%' }}>
+            <div style={{ fontSize: 16, fontWeight: 'bold', color: '#1a2e1a', marginBottom: 4 }}>Mark as Sold</div>
+            <div style={{ fontSize: 13, color: '#888', marginBottom: 16 }}>{sellModal.seller + ' - ' + sellModal.breed + (sellModal.age ? ' ' + sellModal.age : '')}</div>
+            <div style={{ fontSize: 12, color: '#555', marginBottom: 6 }}>{'How many head sold? (blank = all ' + (sellModal.quantity - (sellModal.quantitySold || 0)) + ' remaining)'}</div>
+            <input
+              value={sellQty}
+              onChange={function(e) { setSellQty(e.target.value); }}
+              type="number"
+              placeholder={'All ' + (sellModal.quantity - (sellModal.quantitySold || 0)) + ' head'}
+              style={{ width: '100%', padding: '10px', border: '1px solid #ddd', borderRadius: 8, fontFamily: 'Georgia,serif', fontSize: 13, marginBottom: 12 }}
+            />
+            <div style={{ fontSize: 12, color: '#555', marginBottom: 6 }}>Buyer name and/or phone (optional):</div>
+            <input
+              value={sellBuyer}
+              onChange={function(e) { setSellBuyer(e.target.value); }}
+              placeholder="e.g. Johnson 0421 234 567"
+              style={{ width: '100%', padding: '10px', border: '1px solid #ddd', borderRadius: 8, fontFamily: 'Georgia,serif', fontSize: 13, marginBottom: 12 }}
+            />
+            <div style={{ fontSize: 12, color: '#555', marginBottom: 4 }}>Actual sale price per head:</div>
+            <div style={{ fontSize: 11, color: '#aaa', marginBottom: 6 }}>{'Listed at ' + (sellModal.pricePerHead ? '$' + sellModal.pricePerHead + '/hd' : 'no price') + ' — what did it actually sell for?'}</div>
+            <input
+              value={sellPrice}
+              onChange={function(e) { setSellPrice(e.target.value); }}
+              type="number"
+              placeholder={sellModal.pricePerHead ? String(sellModal.pricePerHead) : 'e.g. 950'}
+              style={{ width: '100%', padding: '10px', border: '2px solid #2d6a4f', borderRadius: 8, fontFamily: 'Georgia,serif', fontSize: 13, marginBottom: 20 }}
+            />
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button onClick={function() { setSellModal(null); setSellQty(''); setSellBuyer(''); setSellPrice(''); }} style={{ flex: 1, padding: '10px', border: '1px solid #ddd', borderRadius: 8, background: '#fff', cursor: 'pointer', fontFamily: 'Georgia,serif' }}>Cancel</button>
+              <button onClick={saveSell} style={{ flex: 1, padding: '10px', border: 'none', borderRadius: 8, background: '#2d4a2d', color: '#fff', cursor: 'pointer', fontFamily: 'Georgia,serif', fontWeight: 'bold' }}>Mark Sold</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div style={{ background: '#1a2e1a', color: '#e8dcc8', padding: '14px 18px', display: 'flex', alignItems: 'center', gap: 12 }}>
         <div style={{ fontSize: 24 }}>🐄</div>
         <div>
@@ -240,37 +436,31 @@ export default function App() {
         </div>
         <div style={{ marginLeft: 'auto', fontSize: 11, color: '#a0b89a', textAlign: 'right' }}>
           <div>{available.length + ' lots available'}</div>
-          <div>{totalHead + ' head listed'}</div>
-          {avgPrice && <div>{'avg sold $' + avgPrice + '/hd'}</div>}
+          <div>{activeBuyers.length + ' buyers looking'}</div>
+          {allMatches.length > 0 && <div style={{ color: '#f0d060' }}>{allMatches.length + ' matches!'}</div>}
         </div>
-        <button onClick={exportData} style={{ marginLeft: 12, background: 'none', border: '1px solid #a0b89a', color: '#a0b89a', borderRadius: 6, padding: '5px 10px', fontSize: 11, cursor: 'pointer', fontFamily: 'Georgia,serif' }}>
-          Export
-        </button>
+        <button onClick={exportData} style={{ marginLeft: 8, background: 'none', border: '1px solid #a0b89a', color: '#a0b89a', borderRadius: 6, padding: '5px 10px', fontSize: 11, cursor: 'pointer', fontFamily: 'Georgia,serif' }}>Export</button>
       </div>
 
-      <div style={{ display: 'flex', background: '#2d4a2d', alignItems: 'center' }}>
+      <div style={{ display: 'flex', background: '#2d4a2d', alignItems: 'center', overflowX: 'auto' }}>
         {[
           { k: 'chat', label: 'Chat' },
           { k: 'stock', label: 'Stock (' + available.length + ')' },
-          { k: 'sold', label: 'Sold (' + sold.length + ')' },
-          { k: 'dashboard', label: 'Dashboard' }
+          { k: 'buyers', label: 'Buyers (' + activeBuyers.length + ')' },
+          { k: 'matches', label: 'Matches (' + allMatches.length + ')' },
+          { k: 'matched', label: 'Matched (' + matched.length + ')' },
+          { k: 'sold', label: 'Sold (' + sold.length + ')' }
         ].map(function(t) {
           return (
-            <button key={t.k} onClick={function() { setTab(t.k); setMatches(null); }} style={{
+            <button key={t.k} onClick={function() { setTab(t.k); }} style={{
               background: tab === t.k ? '#f5f0e8' : 'transparent',
               color: tab === t.k ? '#1a2e1a' : '#c8d8c0',
-              border: 'none', padding: '10px 16px', cursor: 'pointer',
-              fontFamily: 'Georgia,serif', fontSize: 13,
+              border: 'none', padding: '10px 14px', cursor: 'pointer',
+              fontFamily: 'Georgia,serif', fontSize: 12, whiteSpace: 'nowrap',
               fontWeight: tab === t.k ? 'bold' : 'normal'
             }}>{t.label}</button>
           );
         })}
-        {matches && (
-          <div style={{ marginLeft: 'auto', padding: '10px 14px', color: '#f0d060', fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
-            {matches.length + ' match' + (matches.length !== 1 ? 'es' : '')}
-            <button onClick={function() { setMatches(null); }} style={{ background: 'none', border: 'none', color: '#f0d060', cursor: 'pointer', fontSize: 15 }}>x</button>
-          </div>
-        )}
       </div>
 
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -279,7 +469,7 @@ export default function App() {
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
             <div style={{ flex: 1, overflowY: 'auto', padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 10 }}>
               {msgs.map(function(m, i) {
-                const isUser = m.from === 'user';
+                var isUser = m.from === 'user';
                 return (
                   <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: isUser ? 'flex-end' : 'flex-start' }}>
                     <div style={{
@@ -295,7 +485,7 @@ export default function App() {
                     </div>
                     {m.extra && (
                       <div style={{ maxWidth: '82%', marginTop: 6, background: '#1a2e1a', color: '#e8dcc8', borderRadius: 10, padding: '12px 16px', fontSize: 13 }}>
-                        <div style={{ fontWeight: 'bold', marginBottom: 6, color: '#f0d060', letterSpacing: 0.5, fontSize: 11 }}>PRICE ESTIMATE</div>
+                        <div style={{ fontWeight: 'bold', marginBottom: 6, color: '#f0d060', fontSize: 11 }}>PRICE ESTIMATE</div>
                         <div style={{ display: 'flex', gap: 20, marginBottom: 8 }}>
                           <div style={{ textAlign: 'center' }}>
                             <div style={{ fontSize: 10, color: '#a0b89a' }}>LOW</div>
@@ -335,8 +525,8 @@ export default function App() {
             <div style={{ padding: '0 18px 8px', display: 'flex', gap: 7, flexWrap: 'wrap' }}>
               {[
                 "What R2 steers are available?",
-                "What would Angus R2 500kg cost?",
-                "Show all heifers"
+                "Johnson looking for 60 Angus R2 steers",
+                "What would Angus R2 500kg cost?"
               ].map(function(q) {
                 return (
                   <button key={q} onClick={function() { send(q); }} style={{
@@ -357,12 +547,8 @@ export default function App() {
                 value={input}
                 onChange={function(e) { setInput(e.target.value); }}
                 onKeyDown={function(e) { if (e.key === 'Enter') send(); }}
-                placeholder="Type anything — add stock, search, mark sold, ask prices..."
-                style={{
-                  flex: 1, padding: '11px 14px', borderRadius: 9,
-                  border: '2px solid #2d4a2d', fontFamily: 'Georgia,serif',
-                  fontSize: 14, background: '#fff', outline: 'none', color: '#111'
-                }}
+                placeholder="Add stock, add buyer, search, mark sold, ask prices..."
+                style={{ flex: 1, padding: '11px 14px', borderRadius: 9, border: '2px solid #2d4a2d', fontFamily: 'Georgia,serif', fontSize: 14, background: '#fff', outline: 'none', color: '#111' }}
               />
               <button onClick={function() { send(); }} disabled={busy || !input.trim()} style={{
                 background: (busy || !input.trim()) ? '#999' : '#2d4a2d',
@@ -374,7 +560,7 @@ export default function App() {
           </div>
         )}
 
-        {(tab === 'stock' || tab === 'sold') && (
+        {(tab === 'stock' || tab === 'matched' || tab === 'sold') && (
           <div style={{ flex: 1, overflowY: 'auto', padding: 14 }}>
             {tab === 'stock' && categories.length > 1 && (
               <div style={{ display: 'flex', gap: 7, marginBottom: 12, flexWrap: 'wrap' }}>
@@ -391,28 +577,25 @@ export default function App() {
                 })}
               </div>
             )}
-
-            {shown.length === 0 ? (
+            {shownStock.length === 0 ? (
               <div style={{ textAlign: 'center', color: '#aaa', marginTop: 60, fontSize: 14 }}>
-                {matches ? 'No matches found.' : tab === 'sold' ? 'Nothing sold yet.' : 'No stock listed. Use Chat to add some.'}
+                {tab === 'sold' ? 'Nothing sold yet.' : tab === 'matched' ? 'No matched stock yet.' : 'No stock listed. Use Chat to add some.'}
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {shown.map(function(l) {
-                  const badge = getBadge(l.status, l.quantity, l.quantitySold || 0);
-                  const cc = CAT_COLORS[l.category] || '#78909c';
-                  const rem = l.quantity - (l.quantitySold || 0);
+                {shownStock.map(function(l) {
+                  var badge = getBadge(l.status);
+                  var cc = CAT_COLORS[l.category] || '#78909c';
+                  var rem = l.quantity - (l.quantitySold || 0);
                   return (
                     <div key={l.id} style={{
                       background: '#fff', borderRadius: 9, padding: '13px 16px',
                       border: '1px solid #ddd', boxShadow: '0 1px 5px rgba(0,0,0,0.05)',
                       display: 'flex', alignItems: 'flex-start', gap: 12,
-                      opacity: l.status === 'sold' ? 0.6 : 1,
+                      opacity: l.status === 'sold' ? 0.65 : 1,
                       borderLeft: '5px solid ' + cc
                     }}>
-                      {l.photoUrl && (
-                        <img src={l.photoUrl} alt="stock" style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 7, flexShrink: 0 }} />
-                      )}
+                      {l.photoUrl && <img src={l.photoUrl} alt="stock" style={{ width: 60, height: 60, objectFit: 'cover', borderRadius: 7, flexShrink: 0 }} />}
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 4, flexWrap: 'wrap' }}>
                           <span style={{ fontSize: 15, fontWeight: 'bold', color: '#1a2e1a' }}>{l.seller}</span>
@@ -425,7 +608,7 @@ export default function App() {
                           {l.weightKg ? (' - ' + l.weightKg + 'kg') : ''}
                           {l.condition ? (' - ' + l.condition) : ''}
                         </div>
-                        {(l.location || l.trucking || l.nature) && (
+                        {(l.location || l.nature || l.trucking) && (
                           <div style={{ fontSize: 12, color: '#888', marginBottom: 2 }}>
                             {[l.location, l.nature, l.trucking].filter(Boolean).join(' · ')}
                           </div>
@@ -436,100 +619,128 @@ export default function App() {
                               {'$' + l.pricePerHead + '/hd'}
                               {l.centsPerKg ? (' (' + l.centsPerKg + 'c/kg)') : ''}
                             </span>
-                          ) : (
-                            <span style={{ color: '#bbb' }}>Price TBC</span>
-                          )}
+                          ) : <span style={{ color: '#bbb' }}>Price TBC</span>}
                           {l.notes ? ('  |  ' + l.notes) : ''}
                         </div>
-                        {l.buyer && (
-                          <div style={{ fontSize: 12, color: '#6d4c41', marginTop: 3 }}>
-                            {'Buyer: ' + l.buyer + (l.buyerPhone ? (' - ' + l.buyerPhone) : '')}
+                        {l.buyer && <div style={{ fontSize: 12, color: '#6d4c41', marginTop: 3 }}>{'Buyer: ' + l.buyer + (l.buyerPhone ? ' - ' + l.buyerPhone : '')}</div>}
+                        {l.actualSalePrice && (
+                          <div style={{ fontSize: 12, marginTop: 3 }}>
+                            <span style={{ color: '#aaa' }}>{'Listed: $' + (l.pricePerHead || 'TBC') + ' → '}</span>
+                            <span style={{ color: '#2d6a4f', fontWeight: 'bold' }}>{'Sold: $' + l.actualSalePrice + '/hd'}</span>
                           </div>
                         )}
-                        {l.dateSold && (
-                          <div style={{ fontSize: 11, color: '#bbb', marginTop: 2 }}>
-                            {'Sold ' + new Date(l.dateSold).toLocaleDateString('en-NZ', { day: 'numeric', month: 'short', year: 'numeric' })}
-                          </div>
-                        )}
+                        {l.dateSold && <div style={{ fontSize: 11, color: '#bbb', marginTop: 2 }}>{'Sold ' + new Date(l.dateSold).toLocaleDateString('en-NZ', { day: 'numeric', month: 'short', year: 'numeric' })}</div>}
                       </div>
-                      <div style={{ textAlign: 'center', minWidth: 60, flexShrink: 0 }}>
-                        <div style={{ fontSize: 24, fontWeight: 'bold', color: '#1a2e1a', lineHeight: 1 }}>{rem}</div>
+                      <div style={{ textAlign: 'center', minWidth: 64, flexShrink: 0 }}>
+                        <div style={{ fontSize: 22, fontWeight: 'bold', color: '#1a2e1a', lineHeight: 1 }}>{rem}</div>
                         <div style={{ fontSize: 10, color: '#bbb' }}>{'of ' + l.quantity}</div>
-                        {(l.quantitySold > 0) && <div style={{ fontSize: 10, color: '#e67e22' }}>{l.quantitySold + ' sold'}</div>}
+                        {l.quantitySold > 0 && <div style={{ fontSize: 10, color: '#e67e22' }}>{l.quantitySold + ' sold'}</div>}
                         <div style={{ background: badge.color, color: '#fff', borderRadius: 5, padding: '3px 6px', fontSize: 9, fontWeight: 'bold', marginTop: 4 }}>{badge.label}</div>
+                        {(tab === 'stock' || tab === 'matched') && (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginTop: 6 }}>
+                            {tab === 'stock' && (
+                              <button onClick={function() { markMatched(l); }} style={{ background: '#8e44ad', border: 'none', color: '#fff', borderRadius: 5, padding: '3px 6px', fontSize: 9, cursor: 'pointer', fontWeight: 'bold' }}>MATCHED</button>
+                            )}
+                            <button onClick={function() { setSellModal(l); }} style={{ background: '#2d6a4f', border: 'none', color: '#fff', borderRadius: 5, padding: '3px 6px', fontSize: 9, cursor: 'pointer', fontWeight: 'bold' }}>SOLD</button>
+                            <button onClick={function() { setConfirmDelete(l.id); }} style={{ background: 'none', border: '1px solid #c0392b', color: '#c0392b', borderRadius: 5, padding: '2px 6px', fontSize: 9, cursor: 'pointer' }}>DELETE</button>
+                          </div>
+                        )}
                       </div>
                     </div>
                   );
                 })}
               </div>
             )}
+          </div>
+        )}
 
-            {shown.length > 0 && (
-              <div style={{ marginTop: 14, padding: '11px 16px', background: '#1a2e1a', borderRadius: 7, color: '#e8dcc8', display: 'flex', gap: 18, fontSize: 12, flexWrap: 'wrap' }}>
-                <span>{shown.length + ' lots'}</span>
-                <span>{shown.reduce(function(a, l) { return a + (l.quantity - (l.quantitySold || 0)); }, 0) + ' head'}</span>
-                {shown.some(function(l) { return l.pricePerHead; }) && (
-                  <span>
-                    {'$' + Math.min.apply(null, shown.filter(function(l) { return l.pricePerHead; }).map(function(l) { return l.pricePerHead; })) +
-                    ' - $' + Math.max.apply(null, shown.filter(function(l) { return l.pricePerHead; }).map(function(l) { return l.pricePerHead; })) + '/hd'}
-                  </span>
-                )}
+        {tab === 'buyers' && (
+          <div style={{ flex: 1, overflowY: 'auto', padding: 14 }}>
+            {activeBuyers.length === 0 ? (
+              <div style={{ textAlign: 'center', color: '#aaa', marginTop: 60, fontSize: 14 }}>
+                No buyers yet. Use Chat to add one — e.g. "Johnson looking for 60 Angus R2 steers up to $900"
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {activeBuyers.map(function(b) {
+                  var cc = CAT_COLORS[b.category] || '#78909c';
+                  var buyerMatches = allMatches.filter(function(m) { return m.buyerId === b.id; });
+                  return (
+                    <div key={b.id} style={{
+                      background: '#fff', borderRadius: 9, padding: '13px 16px',
+                      border: '1px solid #ddd', boxShadow: '0 1px 5px rgba(0,0,0,0.05)',
+                      display: 'flex', alignItems: 'flex-start', gap: 12,
+                      borderLeft: '5px solid ' + (buyerMatches.length > 0 ? '#f0d060' : cc)
+                    }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 4, flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: 15, fontWeight: 'bold', color: '#1a2e1a' }}>{b.name}</span>
+                          {b.phone && <span style={{ fontSize: 11, color: '#888' }}>{b.phone}</span>}
+                          {b.category && <span style={{ background: cc, color: '#fff', borderRadius: 4, padding: '1px 6px', fontSize: 10, textTransform: 'uppercase' }}>{b.category}</span>}
+                          {buyerMatches.length > 0 && <span style={{ background: '#f0d060', color: '#1a2e1a', borderRadius: 4, padding: '1px 6px', fontSize: 10, fontWeight: 'bold' }}>{buyerMatches.length + ' MATCH' + (buyerMatches.length > 1 ? 'ES' : '')}</span>}
+                        </div>
+                        <div style={{ fontSize: 14, color: '#333', marginBottom: 3 }}>
+                          {'Looking for: '}
+                          <strong>{b.breed || 'Any breed'}</strong>
+                          {b.age ? (' - ' + b.age) : ''}
+                          {b.quantity ? (' - ' + b.quantity + ' head') : ''}
+                        </div>
+                        {b.maxPricePerHead && <div style={{ fontSize: 12, color: '#2d6a4f', fontWeight: 'bold' }}>{'Up to $' + b.maxPricePerHead + '/hd'}</div>}
+                        {b.notes && <div style={{ fontSize: 12, color: '#888' }}>{b.notes}</div>}
+                        <div style={{ fontSize: 11, color: '#bbb', marginTop: 2 }}>{'Added ' + new Date(b.dateAdded).toLocaleDateString('en-NZ', { day: 'numeric', month: 'short' })}</div>
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0 }}>
+                        {buyerMatches.length > 0 && (
+                          <button onClick={function() { setTab('matches'); }} style={{ background: '#f0d060', border: 'none', color: '#1a2e1a', borderRadius: 5, padding: '4px 8px', fontSize: 10, cursor: 'pointer', fontWeight: 'bold' }}>VIEW MATCHES</button>
+                        )}
+                        <button onClick={function() { setConfirmDeleteBuyer(b.id); }} style={{ background: 'none', border: '1px solid #c0392b', color: '#c0392b', borderRadius: 5, padding: '3px 8px', fontSize: 10, cursor: 'pointer' }}>DELETE</button>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
         )}
 
-        {tab === 'dashboard' && (
-          <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 16 }}>
-              {[
-                { label: 'Lots Available', value: available.length, color: '#27ae60' },
-                { label: 'Head Available', value: totalHead, color: '#2d6a4f' },
-                { label: 'Lots Sold', value: sold.length, color: '#c0392b' },
-                { label: 'Head Sold', value: sold.reduce(function(a, l) { return a + (l.quantitySold || 0); }, 0), color: '#e67e22' },
-                { label: 'Avg Price Sold', value: avgPrice ? ('$' + avgPrice) : 'N/A', color: '#8d6e63' },
-                { label: 'Total Listings', value: listings.length, color: '#1b4332' }
-              ].map(function(s) {
-                return (
-                  <div key={s.label} style={{ background: '#fff', borderRadius: 9, padding: '16px', border: '1px solid #ddd', borderTop: '4px solid ' + s.color }}>
-                    <div style={{ fontSize: 11, color: '#aaa', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.5 }}>{s.label}</div>
-                    <div style={{ fontSize: 28, fontWeight: 'bold', color: s.color }}>{s.value}</div>
-                  </div>
-                );
-              })}
-            </div>
-
-            <div style={{ background: '#fff', borderRadius: 9, padding: 16, border: '1px solid #ddd', marginBottom: 12 }}>
-              <div style={{ fontSize: 13, fontWeight: 'bold', color: '#1a2e1a', marginBottom: 12 }}>Stock by Category</div>
-              {Object.keys(CAT_COLORS).map(function(cat) {
-                const catListings = available.filter(function(l) { return l.category === cat; });
-                if (catListings.length === 0) return null;
-                const head = catListings.reduce(function(a, l) { return a + (l.quantity - (l.quantitySold || 0)); }, 0);
-                return (
-                  <div key={cat} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-                    <div style={{ width: 10, height: 10, borderRadius: 2, background: CAT_COLORS[cat], flexShrink: 0 }}></div>
-                    <div style={{ fontSize: 13, color: '#333', textTransform: 'capitalize', width: 80 }}>{cat}</div>
-                    <div style={{ flex: 1, background: '#f0ede8', borderRadius: 4, height: 8 }}>
-                      <div style={{ width: Math.min(100, (head / Math.max(totalHead, 1)) * 100) + '%', background: CAT_COLORS[cat], height: 8, borderRadius: 4 }}></div>
-                    </div>
-                    <div style={{ fontSize: 12, color: '#888', width: 60, textAlign: 'right' }}>{head + ' head'}</div>
-                  </div>
-                );
-              })}
-            </div>
-
-            {soldWithPrice.length > 0 && (
-              <div style={{ background: '#fff', borderRadius: 9, padding: 16, border: '1px solid #ddd' }}>
-                <div style={{ fontSize: 13, fontWeight: 'bold', color: '#1a2e1a', marginBottom: 12 }}>Recent Sales</div>
-                {soldWithPrice.slice(0, 8).map(function(l) {
+        {tab === 'matches' && (
+          <div style={{ flex: 1, overflowY: 'auto', padding: 14 }}>
+            {allMatches.length === 0 ? (
+              <div style={{ textAlign: 'center', color: '#aaa', marginTop: 60, fontSize: 14 }}>
+                No matches yet. Add stock and buyers and I'll find matches automatically!
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                {allMatches.map(function(m, i) {
                   return (
-                    <div key={l.id} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, paddingBottom: 8, borderBottom: '1px solid #f0ede8' }}>
-                      <div style={{ width: 8, height: 8, borderRadius: 2, background: CAT_COLORS[l.category] || '#78909c', flexShrink: 0 }}></div>
-                      <div style={{ flex: 1, fontSize: 13, color: '#333' }}>
-                        {l.seller + ' - ' + l.breed + (l.age ? ' ' + l.age : '')}
+                    <div key={i} style={{ background: '#fff', borderRadius: 9, border: '2px solid #f0d060', boxShadow: '0 2px 8px rgba(240,208,96,0.2)', overflow: 'hidden' }}>
+                      <div style={{ background: '#f0d060', padding: '8px 16px', fontSize: 12, fontWeight: 'bold', color: '#1a2e1a' }}>
+                        {'POTENTIAL MATCH — Score: ' + m.score + '/8'}
                       </div>
-                      <div style={{ fontSize: 13, fontWeight: 'bold', color: '#2d6a4f' }}>{'$' + l.pricePerHead + '/hd'}</div>
-                      <div style={{ fontSize: 11, color: '#bbb' }}>{l.quantitySold + ' hd'}</div>
+                      <div style={{ display: 'flex' }}>
+                        <div style={{ flex: 1, padding: '12px 16px', borderRight: '1px solid #f0ede8' }}>
+                          <div style={{ fontSize: 10, color: '#aaa', marginBottom: 4, letterSpacing: 1 }}>SELLER</div>
+                          <div style={{ fontSize: 14, fontWeight: 'bold', color: '#1a2e1a' }}>{m.listing.seller}</div>
+                          <div style={{ fontSize: 13, color: '#333' }}>
+                            <strong>{m.listing.breed}</strong>
+                            {m.listing.age ? ' ' + m.listing.age : ''}
+                          </div>
+                          <div style={{ fontSize: 12, color: '#888' }}>{m.listing.quantity + ' head'}</div>
+                          {m.listing.pricePerHead && <div style={{ fontSize: 12, color: '#2d6a4f', fontWeight: 'bold' }}>{'$' + m.listing.pricePerHead + '/hd'}</div>}
+                          {m.listing.location && <div style={{ fontSize: 11, color: '#aaa' }}>{m.listing.location}</div>}
+                        </div>
+                        <div style={{ flex: 1, padding: '12px 16px' }}>
+                          <div style={{ fontSize: 10, color: '#aaa', marginBottom: 4, letterSpacing: 1 }}>BUYER</div>
+                          <div style={{ fontSize: 14, fontWeight: 'bold', color: '#1a2e1a' }}>{m.buyer.name}</div>
+                          {m.buyer.phone && <div style={{ fontSize: 12, color: '#888' }}>{m.buyer.phone}</div>}
+                          <div style={{ fontSize: 12, color: '#333' }}>{'Wants: ' + (m.buyer.quantity ? m.buyer.quantity + ' head' : 'flexible')}</div>
+                          {m.buyer.maxPricePerHead && <div style={{ fontSize: 12, color: '#2d6a4f' }}>{'Up to $' + m.buyer.maxPricePerHead + '/hd'}</div>}
+                        </div>
+                      </div>
+                      <div style={{ padding: '10px 16px', borderTop: '1px solid #f0ede8', display: 'flex', gap: 8 }}>
+                        <button onClick={function() { markMatched(m.listing); }} style={{ flex: 1, padding: '8px', background: '#8e44ad', border: 'none', color: '#fff', borderRadius: 7, cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 12, fontWeight: 'bold' }}>MARK MATCHED</button>
+                        <button onClick={function() { setSellModal(m.listing); }} style={{ flex: 1, padding: '8px', background: '#2d6a4f', border: 'none', color: '#fff', borderRadius: 7, cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 12, fontWeight: 'bold' }}>MARK SOLD</button>
+                      </div>
                     </div>
                   );
                 })}
