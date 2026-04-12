@@ -49,12 +49,15 @@ export async function saveAllListings(listings) {
   }
 }
 
+export async function deleteListing(id) {
+  const { error } = await supabase.from('listings').delete().eq('id', id);
+  if (error) throw error;
+}
+
 export async function uploadPhoto(file) {
   const ext = file.name.split('.').pop();
   const fileName = Date.now() + '.' + ext;
-  const { error } = await supabase.storage
-    .from('photos')
-    .upload(fileName, file);
+  const { error } = await supabase.storage.from('photos').upload(fileName, file);
   if (error) throw error;
   const { data } = supabase.storage.from('photos').getPublicUrl(fileName);
   return data.publicUrl;
@@ -81,7 +84,34 @@ export async function saveMessage(msg) {
   if (error) throw error;
 }
 
-export async function deleteListing(id) {
-  const { error } = await supabase.from('listings').delete().eq('id', id);
+export async function getBuyers() {
+  const { data, error } = await supabase
+    .from('buyers')
+    .select('*')
+    .order('date_added', { ascending: false });
+  if (error) throw error;
+  return data || [];
+}
+
+export async function saveBuyer(buyer) {
+  const row = {
+    id: buyer.id,
+    name: buyer.name || null,
+    phone: buyer.phone || null,
+    breed: buyer.breed || null,
+    category: buyer.category || null,
+    age: buyer.age || null,
+    quantity: buyer.quantity || null,
+    max_price_per_head: buyer.maxPricePerHead || null,
+    notes: buyer.notes || null,
+    date_added: buyer.dateAdded || new Date().toISOString(),
+    status: buyer.status || 'looking'
+  };
+  const { error } = await supabase.from('buyers').upsert(row);
+  if (error) throw error;
+}
+
+export async function deleteBuyer(id) {
+  const { error } = await supabase.from('buyers').delete().eq('id', id);
   if (error) throw error;
 }
