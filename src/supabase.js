@@ -80,3 +80,8 @@ export async function saveMessage(msg) {
   });
   if (error) throw error;
 }
+
+export async function deleteListing(id) {
+  const { error } = await supabase.from('listings').delete().eq('id', id);
+  if (error) throw error;
+}
