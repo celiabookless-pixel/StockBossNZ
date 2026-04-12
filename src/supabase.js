@@ -37,6 +37,7 @@ export async function saveListing(listing) {
     photo_url: listing.photoUrl || null,
     date_added: listing.dateAdded || new Date().toISOString(),
     date_sold: listing.dateSold || null,
+    actual_sale_price: listing.actualSalePrice || null,
     status: listing.status || 'available'
   };
   const { error } = await supabase.from('listings').upsert(row);
