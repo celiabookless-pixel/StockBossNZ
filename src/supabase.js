@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 
 const SUPABASE_URL = 'https://nnbmafrcosibaubzkkaf.supabase.co';
-const SUPABASE_KEY = 'Sb_publishable_SS7DAjDZWr9risVwto4GPw_D_-T9DQh';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5uYm1hZnJjb3NpYmF1Ynpra2FmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU5MzYwMDksImV4cCI6MjA5MTUxMjAwOX0.Ylq7h70iHcz_lF87Xu9clNAbkICe7iFQ1_zZSo2YJRo';
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
@@ -33,11 +33,11 @@ export async function saveListing(listing) {
     quantity_sold: listing.quantitySold || 0,
     price_per_head: listing.pricePerHead || null,
     cents_per_kg: listing.centsPerKg || null,
+    actual_sale_price: listing.actualSalePrice || null,
     notes: listing.notes || null,
     photo_url: listing.photoUrl || null,
     date_added: listing.dateAdded || new Date().toISOString(),
     date_sold: listing.dateSold || null,
-    actual_sale_price: listing.actualSalePrice || null,
     status: listing.status || 'available'
   };
   const { error } = await supabase.from('listings').upsert(row);
