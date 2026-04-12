@@ -15,6 +15,13 @@ export default async function handler(req, res) {
     });
 
     const data = await response.json();
+    
+    if (data.content && data.content[0] && data.content[0].text) {
+      var text = data.content[0].text;
+      text = text.replace(/```json/g, '').replace(/```/g, '').trim();
+      data.content[0].text = text;
+    }
+    
     res.status(response.status).json(data);
   } catch (error) {
     res.status(500).json({ error: error.message });
