@@ -125,6 +125,7 @@ export async function saveBuyer(buyer) {
     category: buyer.category || null,
     age: buyer.age || null,
     quantity: buyer.quantity || null,
+weight_kg: buyer.weightKg || null,
     max_price_per_head: buyer.maxPricePerHead || null,
     notes: buyer.notes || null,
     date_added: buyer.dateAdded || new Date().toISOString(),
