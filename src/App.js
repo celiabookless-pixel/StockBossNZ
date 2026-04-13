@@ -445,10 +445,10 @@ export default function App() {
       <div style={{ display: 'flex', background: '#2d4a2d', alignItems: 'center', overflowX: 'auto' }}>
         {[
           { k: 'chat', label: 'Chat' },
-          { k: 'stock', label: 'Stock (' + available.length + ')' },
+          { k: 'stock', label: 'Sellers (' + available.length + ')' },
           { k: 'buyers', label: 'Buyers (' + activeBuyers.length + ')' },
           { k: 'matches', label: 'Matches (' + allMatches.length + ')' },
-          { k: 'matched', label: 'Matched (' + matched.length + ')' },
+          { k: 'matched', label: 'In Talks (' + matched.length + ')' },
           { k: 'sold', label: 'Sold (' + sold.length + ')' }
         ].map(function(t) {
           return (
