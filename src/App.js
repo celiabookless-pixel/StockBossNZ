@@ -442,7 +442,7 @@ export default function App() {
         <button onClick={exportData} style={{ marginLeft: 8, background: 'none', border: '1px solid #a0b89a', color: '#a0b89a', borderRadius: 6, padding: '5px 10px', fontSize: 11, cursor: 'pointer', fontFamily: 'Georgia,serif' }}>Export</button>
       </div>
 
-      <div style={{ display: 'flex', background: '#2d4a2d', alignItems: 'center', overflowX: 'auto' }}>
+      <div style={{ display: 'flex', background: '#2d4a2d', alignItems: 'center', overflowX: 'auto', position: 'sticky', top: 0, zIndex: 100 }}>
         {[
           { k: 'chat', label: 'Chat' },
           { k: 'stock', label: 'Sellers (' + available.length + ')' },
