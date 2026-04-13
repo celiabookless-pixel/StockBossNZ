@@ -106,15 +106,19 @@ function findMatches(listings, buyers) {
   var matches = [];
   buyers.filter(function(b) { return b.status === 'looking'; }).forEach(function(buyer) {
     listings.filter(function(l) { return l.status === 'available' || l.status === 'partial'; }).forEach(function(listing) {
+      if (!buyer.category || !listing.category || buyer.category !== listing.category) return;
       var score = 0;
-      if (buyer.breed && listing.breed && listing.breed.toLowerCase().includes(buyer.breed.toLowerCase())) score += 3;
-      if (buyer.category && listing.category && buyer.category === listing.category) score += 3;
-      if (buyer.age && listing.age && listing.age.toLowerCase().includes(buyer.age.toLowerCase())) score += 2;
-      if (score >= 3) {
-        matches.push({ buyerId: buyer.id, listingId: listing.id, score: score, buyer: buyer, listing: listing });
+      if (buyer.weightKg && listing.weightKg) {
+        var diff = Math.abs(buyer.weightKg - listing.weightKg);
+        if (diff <= 70) score += Math.round(3 * (1 - diff / 70));
       }
+      if (buyer.age && listing.age && listing.age.toLowerCase().includes(buyer.age.toLowerCase())) score += 3;
+      if (buyer.breed && listing.breed && listing.breed.toLowerCase().includes(buyer.breed.toLowerCase())) score += 2;
+      if (score === 0 && !buyer.weightKg && !buyer.age && !buyer.breed) score = 1;
+      matches.push({ buyerId: buyer.id, listingId: listing.id, score: score, buyer: buyer, listing: listing });
     });
   });
+  matches.sort(function(a, b) { return b.score - a.score; });
   return matches;
 }
 
