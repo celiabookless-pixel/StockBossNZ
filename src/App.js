@@ -135,6 +135,7 @@ export default function App() {
   var [sellBuyer, setSellBuyer] = useState('');
   var [sellPrice, setSellPrice] = useState('');
   var [filterCat, setFilterCat] = useState('all');
+var [dismissedMatches, setDismissedMatches] = useState([]);
   var bottom = useRef(null);
   var fileRef = useRef(null);
 
@@ -308,7 +309,14 @@ export default function App() {
     showNotification('Marked as matched!');
   }
 
-  async function saveSell() {
+  async function reList(listing) {
+  var updated = listings.map(function(l) {
+    return l.id === listing.id ? Object.assign({}, l, { status: 'available' }) : l;
+  });
+  setListings(updated);
+  await saveAllListings(updated);
+  showNotification('Re-listed as available!');
+}
     if (!sellModal) return;
     var rem = sellModal.quantity - (sellModal.quantitySold || 0);
     var qty = sellQty ? parseInt(sellQty) : rem;
@@ -340,7 +348,9 @@ export default function App() {
   var matched = listings.filter(function(l) { return l.status === 'matched'; });
   var sold = listings.filter(function(l) { return l.status === 'sold'; });
   var activeBuyers = buyers.filter(function(b) { return b.status === 'looking'; });
-  var allMatches = findMatches(listings, buyers);
+  var allMatches = findMatches(listings, buyers).filter(function(m) {
+  return !dismissedMatches.some(function(d) { return d.buyerId === m.buyerId && d.listingId === m.listingId; });
+});
   var categories = ['all'].concat([...new Set(available.map(function(l) { return l.category; }).filter(Boolean))]);
 
   var shownStock = tab === 'sold' ? sold : tab === 'matched' ? matched : available;
