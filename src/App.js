@@ -647,14 +647,22 @@ var [dismissedMatches, setDismissedMatches] = useState([]);
                         {l.quantitySold > 0 && <div style={{ fontSize: 10, color: '#e67e22' }}>{l.quantitySold + ' sold'}</div>}
                         <div style={{ background: badge.color, color: '#fff', borderRadius: 5, padding: '3px 6px', fontSize: 9, fontWeight: 'bold', marginTop: 4 }}>{badge.label}</div>
                         {(tab === 'stock' || tab === 'matched') && (
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginTop: 6 }}>
-                            {tab === 'stock' && (
-                              <button onClick={function() { markMatched(l); }} style={{ background: '#8e44ad', border: 'none', color: '#fff', borderRadius: 5, padding: '3px 6px', fontSize: 9, cursor: 'pointer', fontWeight: 'bold' }}>MATCHED</button>
-                            )}
-                            <button onClick={function() { setSellModal(l); }} style={{ background: '#2d6a4f', border: 'none', color: '#fff', borderRadius: 5, padding: '3px 6px', fontSize: 9, cursor: 'pointer', fontWeight: 'bold' }}>SOLD</button>
-                            <button onClick={function() { setConfirmDelete(l.id); }} style={{ background: 'none', border: '1px solid #c0392b', color: '#c0392b', borderRadius: 5, padding: '2px 6px', fontSize: 9, cursor: 'pointer' }}>DELETE</button>
-                          </div>
-                        )}
+  <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginTop: 6 }}>
+    {tab === 'stock' && (
+      <button onClick={function() { markMatched(l); }} style={{ background: '#8e44ad', border: 'none', color: '#fff', borderRadius: 5, padding: '3px 6px', fontSize: 9, cursor: 'pointer', fontWeight: 'bold' }}>IN TALKS</button>
+    )}
+    {tab === 'matched' && (
+      <button onClick={function() { reList(l); }} style={{ background: '#2980b9', border: 'none', color: '#fff', borderRadius: 5, padding: '3px 6px', fontSize: 9, cursor: 'pointer', fontWeight: 'bold' }}>RE-LIST</button>
+    )}
+    <button onClick={function() { setSellModal(l); }} style={{ background: '#2d6a4f', border: 'none', color: '#fff', borderRadius: 5, padding: '3px 6px', fontSize: 9, cursor: 'pointer', fontWeight: 'bold' }}>SOLD</button>
+    <button onClick={function() { setConfirmDelete(l.id); }} style={{ background: 'none', border: '1px solid #c0392b', color: '#c0392b', borderRadius: 5, padding: '2px 6px', fontSize: 9, cursor: 'pointer' }}>DELETE</button>
+  </div>
+)}
+{tab === 'sold' && (
+  <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginTop: 6 }}>
+    <button onClick={function() { setConfirmDelete(l.id); }} style={{ background: 'none', border: '1px solid #c0392b', color: '#c0392b', borderRadius: 5, padding: '2px 6px', fontSize: 9, cursor: 'pointer' }}>DELETE</button>
+  </div>
+)}
                       </div>
                     </div>
                   );
@@ -748,9 +756,10 @@ var [dismissedMatches, setDismissedMatches] = useState([]);
                         </div>
                       </div>
                       <div style={{ padding: '10px 16px', borderTop: '1px solid #f0ede8', display: 'flex', gap: 8 }}>
-                        <button onClick={function() { markMatched(m.listing); }} style={{ flex: 1, padding: '8px', background: '#8e44ad', border: 'none', color: '#fff', borderRadius: 7, cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 12, fontWeight: 'bold' }}>MARK MATCHED</button>
-                        <button onClick={function() { setSellModal(m.listing); }} style={{ flex: 1, padding: '8px', background: '#2d6a4f', border: 'none', color: '#fff', borderRadius: 7, cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 12, fontWeight: 'bold' }}>MARK SOLD</button>
-                      </div>
+  <button onClick={function() { markMatched(m.listing); }} style={{ flex: 1, padding: '8px', background: '#8e44ad', border: 'none', color: '#fff', borderRadius: 7, cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 12, fontWeight: 'bold' }}>IN TALKS</button>
+  <button onClick={function() { setSellModal(m.listing); }} style={{ flex: 1, padding: '8px', background: '#2d6a4f', border: 'none', color: '#fff', borderRadius: 7, cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 12, fontWeight: 'bold' }}>MARK SOLD</button>
+  <button onClick={function() { setDismissedMatches(dismissedMatches.concat([{ buyerId: m.buyer.id, listingId: m.listing.id }])); }} style={{ flex: 1, padding: '8px', background: 'none', border: '1px solid #999', color: '#999', borderRadius: 7, cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 12 }}>DISMISS</button>
+</div>
                     </div>
                   );
                 })}
