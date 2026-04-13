@@ -52,6 +52,7 @@ Buyer request shape:
   "maxPricePerHead": number or null,
   "notes": "any info or null",
   "dateAdded": "ISO string",
+  "weightKg": number or null,
   "status": "looking or matched or inactive"
 }
 
@@ -318,7 +319,7 @@ export default function App() {
           return {
             id: b.id, name: b.name, phone: b.phone,
             breed: b.breed, category: b.category, age: b.age,
-            quantity: b.quantity, maxPricePerHead: b.max_price_per_head,
+            quantity: b.quantity, weightKg: b.weight_kg || null, maxPricePerHead: b.max_price_per_head,
             notes: b.notes, dateAdded: b.date_added, status: b.status
           };
         });
