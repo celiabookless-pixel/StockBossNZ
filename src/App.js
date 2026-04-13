@@ -315,7 +315,7 @@ var [dismissedMatches, setDismissedMatches] = useState([]);
   });
   setListings(updated);
   await saveAllListings(updated);
-  showNotification('Re-listed as available!');
+    showNotification('Re-listed as available!');
 }
     if (!sellModal) return;
     var rem = sellModal.quantity - (sellModal.quantitySold || 0);
