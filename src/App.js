@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { getListings, saveAllListings, getMessages, saveMessage, uploadPhoto, deleteListing, getBuyers, saveBuyer, deleteBuyer } from './supabase';
+import { getListings, saveAllListings, getMessages, saveMessage, uploadPhoto, deleteListing, getBuyers, saveBuyer, deleteBuyer, signIn, signUp, signOut, getSession, supabase } from './supabase';
 
 const SYSTEM_PROMPT = `You are StockBossNZ, a smart livestock matching AI for stock agents in New Zealand and Australia. Respond ONLY with raw JSON, no markdown, no backticks, no explanation.
 
@@ -80,7 +80,7 @@ function getBadge(status) {
 }
 
 async function askClaude(userMsg, listings, buyers) {
-const res = await fetch('/api/chat', {
+  const res = await fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -118,7 +118,145 @@ function findMatches(listings, buyers) {
   return matches;
 }
 
+function AuthScreen() {
+  var [mode, setMode] = useState('login');
+  var [email, setEmail] = useState('');
+  var [password, setPassword] = useState('');
+  var [busy, setBusy] = useState(false);
+  var [err, setErr] = useState(null);
+  var [done, setDone] = useState(false);
+
+  async function handleSubmit() {
+    if (!email.trim() || !password.trim()) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      if (mode === 'login') {
+        await signIn(email.trim(), password.trim());
+      } else {
+        await signUp(email.trim(), password.trim());
+        setDone(true);
+      }
+    } catch(e) {
+      setErr(e.message || 'Something went wrong');
+    }
+    setBusy(false);
+  }
+
+  if (done) {
+    return (
+      <div style={{ fontFamily: 'Georgia,serif', background: '#1a2e1a', minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+        <div style={{ background: '#fff', borderRadius: 16, padding: 32, maxWidth: 380, width: '100%', textAlign: 'center' }}>
+          <div style={{ fontSize: 40, marginBottom: 16 }}>📬</div>
+          <div style={{ fontSize: 18, fontWeight: 'bold', color: '#1a2e1a', marginBottom: 8 }}>Check your email</div>
+          <div style={{ fontSize: 14, color: '#666', marginBottom: 16, lineHeight: 1.6 }}>
+            We have sent a confirmation link to <strong>{email}</strong>. Click the link to verify your email, then wait for an admin to approve your account.
+          </div>
+          <button onClick={function() { setDone(false); setMode('login'); }} style={{ background: '#2d4a2d', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 24px', fontSize: 14, cursor: 'pointer', fontFamily: 'Georgia,serif' }}>
+            Back to Login
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ fontFamily: 'Georgia,serif', background: '#1a2e1a', minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+      <div style={{ background: '#fff', borderRadius: 16, padding: 32, maxWidth: 380, width: '100%' }}>
+        <div style={{ textAlign: 'center', marginBottom: 24 }}>
+          <div style={{ fontSize: 36, marginBottom: 8 }}>🐄</div>
+          <div style={{ fontSize: 20, fontWeight: 'bold', color: '#1a2e1a', letterSpacing: 1 }}>STOCKBOSSNZ</div>
+          <div style={{ fontSize: 10, color: '#a0b89a', letterSpacing: 2 }}>SMART LIVESTOCK MATCHING</div>
+        </div>
+
+        <div style={{ display: 'flex', marginBottom: 24, background: '#f5f0e8', borderRadius: 8, padding: 4 }}>
+          <button onClick={function() { setMode('login'); setErr(null); }} style={{
+            flex: 1, padding: '8px', border: 'none', borderRadius: 6, cursor: 'pointer',
+            fontFamily: 'Georgia,serif', fontSize: 13, fontWeight: 'bold',
+            background: mode === 'login' ? '#2d4a2d' : 'transparent',
+            color: mode === 'login' ? '#fff' : '#666'
+          }}>Log In</button>
+          <button onClick={function() { setMode('signup'); setErr(null); }} style={{
+            flex: 1, padding: '8px', border: 'none', borderRadius: 6, cursor: 'pointer',
+            fontFamily: 'Georgia,serif', fontSize: 13, fontWeight: 'bold',
+            background: mode === 'signup' ? '#2d4a2d' : 'transparent',
+            color: mode === 'signup' ? '#fff' : '#666'
+          }}>Sign Up</button>
+        </div>
+
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 12, color: '#555', marginBottom: 4 }}>Email</div>
+          <input
+            value={email}
+            onChange={function(e) { setEmail(e.target.value); }}
+            onKeyDown={function(e) { if (e.key === 'Enter') handleSubmit(); }}
+            type="email"
+            placeholder="your@email.com"
+            style={{ width: '100%', padding: '10px 12px', border: '2px solid #ddd', borderRadius: 8, fontFamily: 'Georgia,serif', fontSize: 14, boxSizing: 'border-box', outline: 'none' }}
+          />
+        </div>
+
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontSize: 12, color: '#555', marginBottom: 4 }}>Password</div>
+          <input
+            value={password}
+            onChange={function(e) { setPassword(e.target.value); }}
+            onKeyDown={function(e) { if (e.key === 'Enter') handleSubmit(); }}
+            type="password"
+            placeholder="••••••••"
+            style={{ width: '100%', padding: '10px 12px', border: '2px solid #ddd', borderRadius: 8, fontFamily: 'Georgia,serif', fontSize: 14, boxSizing: 'border-box', outline: 'none' }}
+          />
+        </div>
+
+        {err && (
+          <div style={{ background: '#fff0f0', border: '1px solid #ffcccc', borderRadius: 7, padding: '9px 13px', fontSize: 12, color: '#c00', marginBottom: 16 }}>
+            {err}
+          </div>
+        )}
+
+        <button
+          onClick={handleSubmit}
+          disabled={busy || !email.trim() || !password.trim()}
+          style={{
+            width: '100%', padding: '12px', border: 'none', borderRadius: 8,
+            background: (busy || !email.trim() || !password.trim()) ? '#999' : '#2d4a2d',
+            color: '#fff', cursor: (busy || !email.trim() || !password.trim()) ? 'not-allowed' : 'pointer',
+            fontFamily: 'Georgia,serif', fontSize: 15, fontWeight: 'bold'
+          }}
+        >
+          {busy ? 'Please wait...' : mode === 'login' ? 'Log In' : 'Sign Up'}
+        </button>
+
+        {mode === 'signup' && (
+          <div style={{ fontSize: 11, color: '#aaa', textAlign: 'center', marginTop: 12, lineHeight: 1.5 }}>
+            After signing up you will need to confirm your email and wait for admin approval before accessing the app.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PendingScreen({ onSignOut }) {
+  return (
+    <div style={{ fontFamily: 'Georgia,serif', background: '#1a2e1a', minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+      <div style={{ background: '#fff', borderRadius: 16, padding: 32, maxWidth: 380, width: '100%', textAlign: 'center' }}>
+        <div style={{ fontSize: 40, marginBottom: 16 }}>⏳</div>
+        <div style={{ fontSize: 18, fontWeight: 'bold', color: '#1a2e1a', marginBottom: 8 }}>Awaiting Approval</div>
+        <div style={{ fontSize: 14, color: '#666', marginBottom: 24, lineHeight: 1.6 }}>
+          Your account is pending approval from an admin. You will be able to access StockBossNZ once approved.
+        </div>
+        <button onClick={onSignOut} style={{ background: 'none', border: '1px solid #ccc', color: '#666', borderRadius: 8, padding: '10px 24px', fontSize: 13, cursor: 'pointer', fontFamily: 'Georgia,serif' }}>
+          Sign Out
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
+  var [session, setSession] = useState(null);
+  var [authLoading, setAuthLoading] = useState(true);
   var [listings, setListings] = useState([]);
   var [buyers, setBuyers] = useState([]);
   var [msgs, setMsgs] = useState([]);
@@ -135,11 +273,23 @@ export default function App() {
   var [sellBuyer, setSellBuyer] = useState('');
   var [sellPrice, setSellPrice] = useState('');
   var [filterCat, setFilterCat] = useState('all');
-var [dismissedMatches, setDismissedMatches] = useState([]);
+  var [dismissedMatches, setDismissedMatches] = useState([]);
   var bottom = useRef(null);
   var fileRef = useRef(null);
 
   useEffect(function() {
+    getSession().then(function(s) {
+      setSession(s);
+      setAuthLoading(false);
+    });
+    var listener = supabase.auth.onAuthStateChange(function(event, s) {
+      setSession(s);
+    });
+    return function() { listener.data.subscription.unsubscribe(); };
+  }, []);
+
+  useEffect(function() {
+    if (!session) return;
     async function load() {
       try {
         var results = await Promise.all([getListings(), getBuyers(), getMessages()]);
@@ -181,11 +331,19 @@ var [dismissedMatches, setDismissedMatches] = useState([]);
       setLoading(false);
     }
     load();
-  }, []);
+  }, [session]);
 
   useEffect(function() {
     if (bottom.current) bottom.current.scrollIntoView({ behavior: 'smooth' });
   }, [msgs]);
+
+  async function handleSignOut() {
+    await signOut();
+    setSession(null);
+    setListings([]);
+    setBuyers([]);
+    setMsgs([]);
+  }
 
   function showNotification(text) {
     setNotification(text);
@@ -306,17 +464,19 @@ var [dismissedMatches, setDismissedMatches] = useState([]);
     });
     setListings(updated);
     await saveAllListings(updated);
-    showNotification('Marked as matched!');
+    showNotification('Moved to In Talks!');
   }
 
   async function reList(listing) {
-  var updated = listings.map(function(l) {
-    return l.id === listing.id ? Object.assign({}, l, { status: 'available' }) : l;
-  });
-  setListings(updated);
-  await saveAllListings(updated);
+    var updated = listings.map(function(l) {
+      return l.id === listing.id ? Object.assign({}, l, { status: 'available' }) : l;
+    });
+    setListings(updated);
+    await saveAllListings(updated);
     showNotification('Re-listed as available!');
-}
+  }
+
+  async function saveSell() {
     if (!sellModal) return;
     var rem = sellModal.quantity - (sellModal.quantitySold || 0);
     var qty = sellQty ? parseInt(sellQty) : rem;
@@ -344,13 +504,29 @@ var [dismissedMatches, setDismissedMatches] = useState([]);
     setTab('sold');
   }
 
+  if (authLoading) {
+    return (
+      <div style={{ fontFamily: 'Georgia,serif', background: '#1a2e1a', minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#e8dcc8', fontSize: 18 }}>
+        Loading...
+      </div>
+    );
+  }
+
+  if (!session) {
+    return <AuthScreen />;
+  }
+
+  if (!session.user.email_confirmed_at) {
+    return <PendingScreen onSignOut={handleSignOut} />;
+  }
+
   var available = listings.filter(function(l) { return l.status === 'available' || l.status === 'partial'; });
   var matched = listings.filter(function(l) { return l.status === 'matched'; });
   var sold = listings.filter(function(l) { return l.status === 'sold'; });
   var activeBuyers = buyers.filter(function(b) { return b.status === 'looking'; });
   var allMatches = findMatches(listings, buyers).filter(function(m) {
-  return !dismissedMatches.some(function(d) { return d.buyerId === m.buyerId && d.listingId === m.listingId; });
-});
+    return !dismissedMatches.some(function(d) { return d.buyerId === m.buyerId && d.listingId === m.listingId; });
+  });
   var categories = ['all'].concat([...new Set(available.map(function(l) { return l.category; }).filter(Boolean))]);
 
   var shownStock = tab === 'sold' ? sold : tab === 'matched' ? matched : available;
@@ -412,14 +588,14 @@ var [dismissedMatches, setDismissedMatches] = useState([]);
               onChange={function(e) { setSellQty(e.target.value); }}
               type="number"
               placeholder={'All ' + (sellModal.quantity - (sellModal.quantitySold || 0)) + ' head'}
-              style={{ width: '100%', padding: '10px', border: '1px solid #ddd', borderRadius: 8, fontFamily: 'Georgia,serif', fontSize: 13, marginBottom: 12 }}
+              style={{ width: '100%', padding: '10px', border: '1px solid #ddd', borderRadius: 8, fontFamily: 'Georgia,serif', fontSize: 13, marginBottom: 12, boxSizing: 'border-box' }}
             />
             <div style={{ fontSize: 12, color: '#555', marginBottom: 6 }}>Buyer name and/or phone (optional):</div>
             <input
               value={sellBuyer}
               onChange={function(e) { setSellBuyer(e.target.value); }}
               placeholder="e.g. Johnson 0421 234 567"
-              style={{ width: '100%', padding: '10px', border: '1px solid #ddd', borderRadius: 8, fontFamily: 'Georgia,serif', fontSize: 13, marginBottom: 12 }}
+              style={{ width: '100%', padding: '10px', border: '1px solid #ddd', borderRadius: 8, fontFamily: 'Georgia,serif', fontSize: 13, marginBottom: 12, boxSizing: 'border-box' }}
             />
             <div style={{ fontSize: 12, color: '#555', marginBottom: 4 }}>Actual sale price per head:</div>
             <div style={{ fontSize: 11, color: '#aaa', marginBottom: 6 }}>{'Listed at ' + (sellModal.pricePerHead ? '$' + sellModal.pricePerHead + '/hd' : 'no price') + ' — what did it actually sell for?'}</div>
@@ -428,7 +604,7 @@ var [dismissedMatches, setDismissedMatches] = useState([]);
               onChange={function(e) { setSellPrice(e.target.value); }}
               type="number"
               placeholder={sellModal.pricePerHead ? String(sellModal.pricePerHead) : 'e.g. 950'}
-              style={{ width: '100%', padding: '10px', border: '2px solid #2d6a4f', borderRadius: 8, fontFamily: 'Georgia,serif', fontSize: 13, marginBottom: 20 }}
+              style={{ width: '100%', padding: '10px', border: '2px solid #2d6a4f', borderRadius: 8, fontFamily: 'Georgia,serif', fontSize: 13, marginBottom: 20, boxSizing: 'border-box' }}
             />
             <div style={{ display: 'flex', gap: 10 }}>
               <button onClick={function() { setSellModal(null); setSellQty(''); setSellBuyer(''); setSellPrice(''); }} style={{ flex: 1, padding: '10px', border: '1px solid #ddd', borderRadius: 8, background: '#fff', cursor: 'pointer', fontFamily: 'Georgia,serif' }}>Cancel</button>
@@ -450,6 +626,7 @@ var [dismissedMatches, setDismissedMatches] = useState([]);
           {allMatches.length > 0 && <div style={{ color: '#f0d060' }}>{allMatches.length + ' matches!'}</div>}
         </div>
         <button onClick={exportData} style={{ marginLeft: 8, background: 'none', border: '1px solid #a0b89a', color: '#a0b89a', borderRadius: 6, padding: '5px 10px', fontSize: 11, cursor: 'pointer', fontFamily: 'Georgia,serif' }}>Export</button>
+        <button onClick={handleSignOut} style={{ background: 'none', border: '1px solid #a0b89a', color: '#a0b89a', borderRadius: 6, padding: '5px 10px', fontSize: 11, cursor: 'pointer', fontFamily: 'Georgia,serif' }}>Log Out</button>
       </div>
 
       <div style={{ display: 'flex', background: '#2d4a2d', alignItems: 'center', overflowX: 'auto', position: 'sticky', top: 0, zIndex: 100 }}>
@@ -589,7 +766,7 @@ var [dismissedMatches, setDismissedMatches] = useState([]);
             )}
             {shownStock.length === 0 ? (
               <div style={{ textAlign: 'center', color: '#aaa', marginTop: 60, fontSize: 14 }}>
-                {tab === 'sold' ? 'Nothing sold yet.' : tab === 'matched' ? 'No matched stock yet.' : 'No stock listed. Use Chat to add some.'}
+                {tab === 'sold' ? 'Nothing sold yet.' : tab === 'matched' ? 'No stock in talks yet.' : 'No stock listed. Use Chat to add some.'}
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -635,7 +812,7 @@ var [dismissedMatches, setDismissedMatches] = useState([]);
                         {l.buyer && <div style={{ fontSize: 12, color: '#6d4c41', marginTop: 3 }}>{'Buyer: ' + l.buyer + (l.buyerPhone ? ' - ' + l.buyerPhone : '')}</div>}
                         {l.actualSalePrice && (
                           <div style={{ fontSize: 12, marginTop: 3 }}>
-                            <span style={{ color: '#aaa' }}>{'Listed: $' + (l.pricePerHead || 'TBC') + ' → '}</span>
+                            <span style={{ color: '#aaa' }}>{'Listed: $' + (l.pricePerHead || 'TBC') + ' -> '}</span>
                             <span style={{ color: '#2d6a4f', fontWeight: 'bold' }}>{'Sold: $' + l.actualSalePrice + '/hd'}</span>
                           </div>
                         )}
@@ -647,22 +824,22 @@ var [dismissedMatches, setDismissedMatches] = useState([]);
                         {l.quantitySold > 0 && <div style={{ fontSize: 10, color: '#e67e22' }}>{l.quantitySold + ' sold'}</div>}
                         <div style={{ background: badge.color, color: '#fff', borderRadius: 5, padding: '3px 6px', fontSize: 9, fontWeight: 'bold', marginTop: 4 }}>{badge.label}</div>
                         {(tab === 'stock' || tab === 'matched') && (
-  <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginTop: 6 }}>
-    {tab === 'stock' && (
-      <button onClick={function() { markMatched(l); }} style={{ background: '#8e44ad', border: 'none', color: '#fff', borderRadius: 5, padding: '3px 6px', fontSize: 9, cursor: 'pointer', fontWeight: 'bold' }}>IN TALKS</button>
-    )}
-    {tab === 'matched' && (
-      <button onClick={function() { reList(l); }} style={{ background: '#2980b9', border: 'none', color: '#fff', borderRadius: 5, padding: '3px 6px', fontSize: 9, cursor: 'pointer', fontWeight: 'bold' }}>RE-LIST</button>
-    )}
-    <button onClick={function() { setSellModal(l); }} style={{ background: '#2d6a4f', border: 'none', color: '#fff', borderRadius: 5, padding: '3px 6px', fontSize: 9, cursor: 'pointer', fontWeight: 'bold' }}>SOLD</button>
-    <button onClick={function() { setConfirmDelete(l.id); }} style={{ background: 'none', border: '1px solid #c0392b', color: '#c0392b', borderRadius: 5, padding: '2px 6px', fontSize: 9, cursor: 'pointer' }}>DELETE</button>
-  </div>
-)}
-{tab === 'sold' && (
-  <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginTop: 6 }}>
-    <button onClick={function() { setConfirmDelete(l.id); }} style={{ background: 'none', border: '1px solid #c0392b', color: '#c0392b', borderRadius: 5, padding: '2px 6px', fontSize: 9, cursor: 'pointer' }}>DELETE</button>
-  </div>
-)}
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginTop: 6 }}>
+                            {tab === 'stock' && (
+                              <button onClick={function() { markMatched(l); }} style={{ background: '#8e44ad', border: 'none', color: '#fff', borderRadius: 5, padding: '3px 6px', fontSize: 9, cursor: 'pointer', fontWeight: 'bold' }}>IN TALKS</button>
+                            )}
+                            {tab === 'matched' && (
+                              <button onClick={function() { reList(l); }} style={{ background: '#2980b9', border: 'none', color: '#fff', borderRadius: 5, padding: '3px 6px', fontSize: 9, cursor: 'pointer', fontWeight: 'bold' }}>RE-LIST</button>
+                            )}
+                            <button onClick={function() { setSellModal(l); }} style={{ background: '#2d6a4f', border: 'none', color: '#fff', borderRadius: 5, padding: '3px 6px', fontSize: 9, cursor: 'pointer', fontWeight: 'bold' }}>SOLD</button>
+                            <button onClick={function() { setConfirmDelete(l.id); }} style={{ background: 'none', border: '1px solid #c0392b', color: '#c0392b', borderRadius: 5, padding: '2px 6px', fontSize: 9, cursor: 'pointer' }}>DELETE</button>
+                          </div>
+                        )}
+                        {tab === 'sold' && (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginTop: 6 }}>
+                            <button onClick={function() { setConfirmDelete(l.id); }} style={{ background: 'none', border: '1px solid #c0392b', color: '#c0392b', borderRadius: 5, padding: '2px 6px', fontSize: 9, cursor: 'pointer' }}>DELETE</button>
+                          </div>
+                        )}
                       </div>
                     </div>
                   );
@@ -725,7 +902,7 @@ var [dismissedMatches, setDismissedMatches] = useState([]);
           <div style={{ flex: 1, overflowY: 'auto', padding: 14 }}>
             {allMatches.length === 0 ? (
               <div style={{ textAlign: 'center', color: '#aaa', marginTop: 60, fontSize: 14 }}>
-                No matches yet. Add stock and buyers and I'll find matches automatically!
+                No matches yet. Add stock and buyers and I will find matches automatically!
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -756,10 +933,10 @@ var [dismissedMatches, setDismissedMatches] = useState([]);
                         </div>
                       </div>
                       <div style={{ padding: '10px 16px', borderTop: '1px solid #f0ede8', display: 'flex', gap: 8 }}>
-  <button onClick={function() { markMatched(m.listing); }} style={{ flex: 1, padding: '8px', background: '#8e44ad', border: 'none', color: '#fff', borderRadius: 7, cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 12, fontWeight: 'bold' }}>IN TALKS</button>
-  <button onClick={function() { setSellModal(m.listing); }} style={{ flex: 1, padding: '8px', background: '#2d6a4f', border: 'none', color: '#fff', borderRadius: 7, cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 12, fontWeight: 'bold' }}>MARK SOLD</button>
-  <button onClick={function() { setDismissedMatches(dismissedMatches.concat([{ buyerId: m.buyer.id, listingId: m.listing.id }])); }} style={{ flex: 1, padding: '8px', background: 'none', border: '1px solid #999', color: '#999', borderRadius: 7, cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 12 }}>DISMISS</button>
-</div>
+                        <button onClick={function() { markMatched(m.listing); }} style={{ flex: 1, padding: '8px', background: '#8e44ad', border: 'none', color: '#fff', borderRadius: 7, cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 12, fontWeight: 'bold' }}>IN TALKS</button>
+                        <button onClick={function() { setSellModal(m.listing); }} style={{ flex: 1, padding: '8px', background: '#2d6a4f', border: 'none', color: '#fff', borderRadius: 7, cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 12, fontWeight: 'bold' }}>MARK SOLD</button>
+                        <button onClick={function() { setDismissedMatches(dismissedMatches.concat([{ buyerId: m.buyer.id, listingId: m.listing.id }])); }} style={{ flex: 1, padding: '8px', background: 'none', border: '1px solid #999', color: '#999', borderRadius: 7, cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 12 }}>DISMISS</button>
+                      </div>
                     </div>
                   );
                 })}
