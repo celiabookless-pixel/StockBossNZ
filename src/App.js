@@ -884,6 +884,7 @@ export default function App() {
                           <strong>{b.breed || 'Any breed'}</strong>
                           {b.age ? (' - ' + b.age) : ''}
                           {b.quantity ? (' - ' + b.quantity + ' head') : ''}
+{b.weightKg ? (' - ' + b.weightKg + 'kg') : ''}
                         </div>
                         {b.maxPricePerHead && <div style={{ fontSize: 12, color: '#2d6a4f', fontWeight: 'bold' }}>{'Up to $' + b.maxPricePerHead + '/hd'}</div>}
                         {b.notes && <div style={{ fontSize: 12, color: '#888' }}>{b.notes}</div>}
