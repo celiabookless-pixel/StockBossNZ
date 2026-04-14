@@ -565,7 +565,7 @@ export default function App() {
         <div style={{ position: 'absolute', inset: 0, backgroundImage: 'url(' + FARM_PHOTO_URL + ')', backgroundSize: 'cover', backgroundPosition: 'center', opacity: 0.3 }} />
         <div style={{ position: 'absolute', inset: 0, background: 'rgba(10,30,10,0.55)' }} />
         <div style={{ position: 'relative', zIndex: 1, width: 44, height: 44, borderRadius: '50%', border: '2px solid rgba(255,255,255,0.3)', background: 'rgba(255,255,255,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', flexShrink: 0 }}>
-          <img src={LOGO_URL} alt="logo" style={{ width: 36, height: 36, objectFit: 'contain', filter: 'brightness(10)' }} onError={function(e) { e.target.outerHTML = '<span style="font-size:22px">🐄</span>'; }} />
+          <span style={{fontSize:'22px'}}>🐄</span>
         </div>
         <div style={{ position: 'relative', zIndex: 1 }}>
           <div style={{ fontSize: 17, fontWeight: 'bold', letterSpacing: 1 }}>STOCKBOSSNZ</div>
