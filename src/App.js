@@ -1,9 +1,8 @@
 import { useState, useRef, useEffect } from 'react';
-import { getListings, saveAllListings, getMessages, saveMessage, uploadPhoto, deleteListing, getBuyers, saveBuyer, deleteBuyer, signIn, signUp, signOut, getSession, supabase, saveMarketData, clearMarketData } from './supabase';
+import { getListings, saveAllListings, getMessages, saveMessage, uploadPhoto, deleteListing, getBuyers, saveBuyer, deleteBuyer, signIn, signUp, signOut, getSession, supabase, saveMarketData, clearMarketData, getMarketData } from './supabase';
 
 const ADMIN_EMAIL = 'celia.bee@hotmail.com';
 const ADMIN_PASSWORD = 'stockboss2024';
-const LOGO_URL = 'https://nnbmafrcosibaubzkkaf.supabase.co/storage/v1/object/public/Assets/Untitled%20design.png';
 const FARM_PHOTO_URL = 'https://nnbmafrcosibaubzkkaf.supabase.co/storage/v1/object/public/Assets/farm.jpg';
 
 const SYSTEM_PROMPT = `You are StockBossNZ, a smart livestock matching AI for stock agents in New Zealand and Australia. Respond ONLY with raw JSON, no markdown, no backticks, no explanation.
@@ -77,7 +76,7 @@ Rules:
 - query_stock: find available/partial/matched listings matching request - ONLY return listings where category AND age match exactly what was asked. Do not return other categories or ages. Quantity is flexible but category and age must match exactly.
 - add_buyer: new buyer request
 - query_buyers: find looking buyers that match available stock
-- price_estimate: estimate from sold listings history, use actualSalePrice if available as it is more accurate than pricePerHead
+- price_estimate: estimate using BOTH sold listings history (actualSalePrice preferred) AND the MarketData reference data which contains real NZ saleyard results from PGG Wrightson. Use MarketData to find matching class, sub_class and weight_range_kg and give accurate low/mid/high estimates with saleyard references in your reasoning.
 - Always return FULL array on add/sell/update actions
 - Be flexible with quantity matching - buyer wanting 60 from a mob of 100 is still a match
 - Extract as much detail as possible from natural language`;
@@ -95,8 +94,8 @@ function getBadge(status) {
   return { label: 'AVAILABLE', color: '#27ae60' };
 }
 
-async function askClaude(userMsg, listings, buyers, history) {
-  var contextPrefix = 'Date: ' + new Date().toISOString() + '\nStock: ' + JSON.stringify(listings) + '\nBuyers: ' + JSON.stringify(buyers) + '\n\n';
+async function askClaude(userMsg, listings, buyers, history, marketData) {
+  var contextPrefix = 'Date: ' + new Date().toISOString() + '\nStock: ' + JSON.stringify(listings) + '\nBuyers: ' + JSON.stringify(buyers) + '\nMarketData: ' + JSON.stringify(marketData || []) + '\n\n';
   var messages = [];
   if (history && history.length > 0) {
     var recent = history.slice(-10);
@@ -205,7 +204,7 @@ function AuthScreen() {
     <div style={{ fontFamily: 'Georgia,serif', background: '#1a2e1a', minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
       <div style={{ background: '#fff', borderRadius: 16, padding: 32, maxWidth: 380, width: '100%' }}>
         <div style={{ textAlign: 'center', marginBottom: 24 }}>
-          <img src={LOGO_URL} alt="StockBossNZ" style={{ width: 64, height: 64, objectFit: 'contain', marginBottom: 8 }} onError={function(e) { e.target.outerHTML = '<div style="font-size:40px;margin-bottom:8px">🐄</div>'; }} />
+          <div style={{ fontSize: 40, marginBottom: 8 }}>🐄</div>
           <div style={{ fontSize: 20, fontWeight: 'bold', color: '#1a2e1a', letterSpacing: 1 }}>STOCKBOSSNZ</div>
           <div style={{ fontSize: 10, color: '#a0b89a', letterSpacing: 2 }}>SMART LIVESTOCK MATCHING</div>
         </div>
@@ -349,6 +348,7 @@ export default function App() {
   var [listings, setListings] = useState([]);
   var [buyers, setBuyers] = useState([]);
   var [msgs, setMsgs] = useState([]);
+  var [marketData, setMarketData] = useState([]);
   var [input, setInput] = useState('');
   var [busy, setBusy] = useState(false);
   var [tab, setTab] = useState('chat');
@@ -378,11 +378,11 @@ export default function App() {
     if (!session) return;
     async function load() {
       try {
-        var results = await Promise.all([getListings(), getBuyers(), getMessages()]);
-        var ls = results[0]; var bs = results[1]; var ms = results[2];
+        var results = await Promise.all([getListings(), getBuyers(), getMessages(), getMarketData()]);
+        var ls = results[0]; var bs = results[1]; var ms = results[2]; var md = results[3];
         var mapped = ls.map(function(l) { return { id: l.id, seller: l.seller, sellerPhone: l.seller_phone, buyer: l.buyer, buyerPhone: l.buyer_phone, breed: l.breed, category: l.category, age: l.age, weightKg: l.weight_kg, condition: l.condition, location: l.location, trucking: l.trucking, nature: l.nature, quantity: l.quantity, quantitySold: l.quantity_sold, pricePerHead: l.price_per_head, centsPerKg: l.cents_per_kg, actualSalePrice: l.actual_sale_price, notes: l.notes, photoUrl: l.photo_url, dateAdded: l.date_added, dateSold: l.date_sold, status: l.status }; });
         var mappedBuyers = bs.map(function(b) { return { id: b.id, name: b.name, phone: b.phone, breed: b.breed, category: b.category, age: b.age, quantity: b.quantity, weightKg: b.weight_kg || null, maxPricePerHead: b.max_price_per_head, notes: b.notes, dateAdded: b.date_added, status: b.status }; });
-        setListings(mapped); setBuyers(mappedBuyers);
+        setListings(mapped); setBuyers(mappedBuyers); setMarketData(md);
         if (ms.length > 0) { setMsgs(ms); } else {
           setMsgs([{ from: 'ai', text: "G'day! I'm StockBossNZ. To add stock or a buyer I need at least: name, age (e.g. R2, weaner), sex/class (e.g. steers, heifers), and weight. Mixed age mobs don't need a weight. Example: 'Pete has 80 Angus R2 steers 420kg Hawkes Bay $1100/hd'", extra: null }]);
         }
@@ -394,7 +394,7 @@ export default function App() {
 
   useEffect(function() { if (bottom.current) bottom.current.scrollIntoView({ behavior: 'smooth' }); }, [msgs]);
 
-  async function handleSignOut() { await signOut(); setSession(null); setListings([]); setBuyers([]); setMsgs([]); }
+  async function handleSignOut() { await signOut(); setSession(null); setListings([]); setBuyers([]); setMsgs([]); setMarketData([]); }
   function showNotification(text) { setNotification(text); setTimeout(function() { setNotification(null); }, 4000); }
 
   async function send(overrideInput) {
@@ -405,7 +405,7 @@ export default function App() {
     var newMsgs = msgs.concat([userMsg]);
     setMsgs(newMsgs); await saveMessage(userMsg); setBusy(true);
     try {
-      var result = await askClaude(msg, listings, buyers, msgs);
+      var result = await askClaude(msg, listings, buyers, msgs, marketData);
       var updatedListings = listings; var updatedBuyers = buyers;
       if (result.listings) { updatedListings = result.listings; setListings(updatedListings); await saveAllListings(updatedListings); }
       if (result.buyers) { updatedBuyers = result.buyers; setBuyers(updatedBuyers); for (var i = 0; i < updatedBuyers.length; i++) { await saveBuyer(updatedBuyers[i]); } }
@@ -564,9 +564,7 @@ export default function App() {
       <div style={{ position: 'relative', background: '#1a2e1a', color: '#e8dcc8', padding: '14px 18px', display: 'flex', alignItems: 'center', gap: 12, overflow: 'hidden' }}>
         <div style={{ position: 'absolute', inset: 0, backgroundImage: 'url(' + FARM_PHOTO_URL + ')', backgroundSize: 'cover', backgroundPosition: 'center', opacity: 0.3 }} />
         <div style={{ position: 'absolute', inset: 0, background: 'rgba(10,30,10,0.55)' }} />
-        <div style={{ position: 'relative', zIndex: 1, width: 44, height: 44, borderRadius: '50%', border: '2px solid rgba(255,255,255,0.3)', background: 'rgba(255,255,255,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', flexShrink: 0 }}>
-          <span style={{fontSize:'22px'}}>🐄</span>
-        </div>
+        <div style={{ position: 'relative', zIndex: 1, fontSize: 28 }}>🐄</div>
         <div style={{ position: 'relative', zIndex: 1 }}>
           <div style={{ fontSize: 17, fontWeight: 'bold', letterSpacing: 1 }}>STOCKBOSSNZ</div>
           <div style={{ fontSize: 9, color: '#a0b89a', letterSpacing: 2 }}>SMART LIVESTOCK MATCHING</div>
