@@ -97,7 +97,16 @@ function getBadge(status) {
   return { label: 'AVAILABLE', color: '#27ae60' };
 }
 
-async function askClaude(userMsg, listings, buyers) {
+async function askClaude(userMsg, listings, buyers, history) {
+  var contextPrefix = 'Date: ' + new Date().toISOString() + '\nStock: ' + JSON.stringify(listings) + '\nBuyers: ' + JSON.stringify(buyers) + '\n\n';
+  var messages = [];
+  if (history && history.length > 0) {
+    var recent = history.slice(-10);
+    recent.forEach(function(m) {
+      messages.push({ role: m.from === 'user' ? 'user' : 'assistant', content: m.text });
+    });
+  }
+  messages.push({ role: 'user', content: contextPrefix + 'Message: ' + userMsg });
   const res = await fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -105,10 +114,7 @@ async function askClaude(userMsg, listings, buyers) {
       model: 'claude-sonnet-4-5',
       max_tokens: 2000,
       system: SYSTEM_PROMPT,
-      messages: [{
-        role: 'user',
-        content: 'Date: ' + new Date().toISOString() + '\nStock: ' + JSON.stringify(listings) + '\nBuyers: ' + JSON.stringify(buyers) + '\n\nMessage: ' + userMsg
-      }]
+      messages: messages
     })
   });
   if (!res.ok) {
@@ -401,7 +407,7 @@ export default function App() {
     await saveMessage(userMsg);
     setBusy(true);
     try {
-      var result = await askClaude(msg, listings, buyers);
+      var result = await askClaude(msg, listings, buyers, msgs);
       var updatedListings = listings;
       var updatedBuyers = buyers;
       if (result.listings) {
