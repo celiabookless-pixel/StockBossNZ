@@ -312,7 +312,7 @@ function AdminPanel({ listings, buyers, onNotification }) {
       </div>
       <div style={{ background: '#fff', borderRadius: 10, border: '1px solid #ddd', padding: 16, marginBottom: 12 }}>
         <div style={{ fontSize: 13, fontWeight: 'bold', color: '#1a2e1a', marginBottom: 4 }}>Market Reference Data</div>
-        <div style={{ fontSize: 11, color: '#888', marginBottom: 12, lineHeight: 1.5 }}>Upload your PGG Wrightson CSV to power the price estimate feature. Update fortnightly for best results.</div>
+        <div style={{ fontSize: 11, color: '#888', marginBottom: 12, lineHeight: 1.5 }}>Upload your market data CSV to power the price estimate feature. Update fortnightly for best results.</div>
         <input ref={fileRef} type="file" accept=".csv" onChange={handleCSVUpload} style={{ display: 'none' }} />
         <div style={{ display: 'flex', gap: 8 }}>
           <button onClick={function() { fileRef.current && fileRef.current.click(); }} disabled={csvBusy} style={{ flex: 1, padding: '10px', background: csvBusy ? '#999' : '#2d4a2d', color: '#fff', border: 'none', borderRadius: 8, fontFamily: 'Georgia,serif', fontSize: 12, fontWeight: 'bold', cursor: csvBusy ? 'not-allowed' : 'pointer' }}>
