@@ -76,7 +76,7 @@ Rules:
 - query_stock: find available/partial/matched listings matching request - ONLY return listings where category AND age match exactly what was asked. Do not return other categories or ages. Quantity is flexible but category and age must match exactly.
 - add_buyer: new buyer request
 - query_buyers: find looking buyers that match available stock
-- price_estimate: estimate using BOTH sold listings history (actualSalePrice preferred) AND the MarketData reference data which contains real NZ saleyard results from PGG Wrightson. Use MarketData to find matching class, sub_class and weight_range_kg and give accurate low/mid/high estimates with saleyard references in your reasoning.
+- price_estimate: estimate using BOTH sold listings history (actualSalePrice preferred) AND the MarketData reference data which contains recent NZ saleyard results. Use MarketData to find matching class, sub_class and weight_range_kg and give accurate low/mid/high estimates. In your reasoning refer to results as "recent NZ saleyard data" or "recent market results" - do not mention specific sale companies by name.
 - Always return FULL array on add/sell/update actions
 - Be flexible with quantity matching - buyer wanting 60 from a mob of 100 is still a match
 - Extract as much detail as possible from natural language`;
