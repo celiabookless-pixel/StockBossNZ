@@ -76,7 +76,7 @@ Special rule: If age contains "mixed" (e.g. "mixed age", "mixed"), set weightKg 
 Rules:
 - add_stock: new listing from seller info
 - sell_stock: mark stock as sold or partial, update quantitySold, dateSold, buyer info
-- query_stock: find available/partial/matched listings matching request - quantity is flexible, partial matches are fine
+- query_stock: find available/partial/matched listings matching request - ONLY return listings where category AND age match exactly what was asked. Do not enter other categories or ages. If someone asks for R2 steers only return steers that are R2. Quantity is flexible but category and age must match exactly.
 - add_buyer: new buyer request
 - query_buyers: find looking buyers that match available stock
 - price_estimate: estimate from sold listings history, use actualSalePrice if available as it is more accurate than pricePerHead
