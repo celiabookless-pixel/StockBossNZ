@@ -56,6 +56,23 @@ Buyer request shape:
   "status": "looking or matched or inactive"
 }
 
+MINIMUM DATA REQUIREMENTS:
+Before saving any stock listing or buyer request, you MUST have at least these 3 fields:
+1. name (seller or buyer name)
+2. age (e.g. R2, weaner, R3, mixed age) 
+3. category/sex (steers, heifers, cows, bulls, calves etc)
+4. weightKg — EXCEPT if age is "mixed age" or "mixed" in which case weightKg can be null (set notes to "mixed age - any weight")
+
+If any of these are missing, do NOT save the listing or buyer. Instead set action to "chat" and ask specifically for what is missing. For example:
+- "I need a weight or weight range to save this — what do they weigh roughly?"
+- "What sex are they — steers, heifers, bulls?"
+- "What age are they — R2, weaners, mixed age?"
+- "Who is the seller/buyer name?"
+
+Once you have the minimum fields, save the listing and extract any extra detail mentioned (breed, quantity, price, location, condition etc) to improve match quality.
+
+Special rule: If age contains "mixed" (e.g. "mixed age", "mixed"), set weightKg to null and add "mixed age - any weight" to notes.
+
 Rules:
 - add_stock: new listing from seller info
 - sell_stock: mark stock as sold or partial, update quantitySold, dateSold, buyer info
@@ -103,20 +120,38 @@ async function askClaude(userMsg, listings, buyers) {
   return JSON.parse(raw);
 }
 
+const MIN_MATCH_SCORE = 5;
+
 function findMatches(listings, buyers) {
   var matches = [];
   buyers.filter(function(b) { return b.status === 'looking'; }).forEach(function(buyer) {
     listings.filter(function(l) { return l.status === 'available' || l.status === 'partial'; }).forEach(function(listing) {
+      // Category must match as hard filter
       if (!buyer.category || !listing.category || buyer.category !== listing.category) return;
+
       var score = 0;
-      if (buyer.weightKg && listing.weightKg) {
+
+      // Weight score — up to 3 points (skip if either is mixed age / null)
+      var isMixedAge = buyer.age && buyer.age.toLowerCase().includes('mixed');
+      if (!isMixedAge && buyer.weightKg && listing.weightKg) {
         var diff = Math.abs(buyer.weightKg - listing.weightKg);
         if (diff <= 70) score += Math.round(3 * (1 - diff / 70));
       }
-      if (buyer.age && listing.age && listing.age.toLowerCase().includes(buyer.age.toLowerCase())) score += 3;
-      if (buyer.breed && listing.breed && listing.breed.toLowerCase().includes(buyer.breed.toLowerCase())) score += 2;
-      if (score === 0 && !buyer.weightKg && !buyer.age && !buyer.breed) score = 1;
-      matches.push({ buyerId: buyer.id, listingId: listing.id, score: score, buyer: buyer, listing: listing });
+
+      // Age score — 3 points (skip if buyer is mixed age)
+      if (!isMixedAge && buyer.age && listing.age && listing.age.toLowerCase().includes(buyer.age.toLowerCase())) {
+        score += 3;
+      }
+
+      // Breed score — 2 points
+      if (buyer.breed && listing.breed && listing.breed.toLowerCase().includes(buyer.breed.toLowerCase())) {
+        score += 2;
+      }
+
+      // Only include if score meets minimum threshold
+      if (score >= MIN_MATCH_SCORE) {
+        matches.push({ buyerId: buyer.id, listingId: listing.id, score: score, buyer: buyer, listing: listing });
+      }
     });
   });
   matches.sort(function(a, b) { return b.score - a.score; });
@@ -328,7 +363,7 @@ export default function App() {
         if (ms.length > 0) {
           setMsgs(ms);
         } else {
-          setMsgs([{ from: 'ai', text: "G'day! I'm StockBossNZ. Tell me what stock is for sale — e.g. 'Pete has 80 Angus R2 steers, $1100/hd Hawkes Bay' — or add a buyer — e.g. 'Johnson looking for 60 Friesian R2 steers up to $900'. I'll find matches automatically!", extra: null }]);
+          setMsgs([{ from: 'ai', text: "G'day! I'm StockBossNZ. Tell me what stock is for sale or add a buyer. To get a good match I need at least: name, age (e.g. R2, weaner), sex/class (e.g. steers, heifers), and weight — e.g. 'Pete has 80 Angus R2 steers 420kg Hawkes Bay $1100/hd' or 'Johnson looking for 60 Friesian R2 steers around 380kg up to $900'. Mixed age mobs don't need a weight.", extra: null }]);
         }
       } catch(e) {
         setErr('Could not load: ' + e.message);
@@ -716,9 +751,9 @@ export default function App() {
 
             <div style={{ padding: '0 18px 8px', display: 'flex', gap: 7, flexWrap: 'wrap' }}>
               {[
-                "What R2 steers are available?",
-                "Johnson looking for 60 Angus R2 steers",
-                "What would Angus R2 500kg cost?"
+                "Pete has 80 Angus R2 steers 420kg Hawkes Bay $1100/hd",
+                "Johnson looking for 60 R2 steers around 400kg up to $1100",
+                "What would Angus R2 steers 420kg be worth?"
               ].map(function(q) {
                 return (
                   <button key={q} onClick={function() { send(q); }} style={{
@@ -739,7 +774,7 @@ export default function App() {
                 value={input}
                 onChange={function(e) { setInput(e.target.value); }}
                 onKeyDown={function(e) { if (e.key === 'Enter') send(); }}
-                placeholder="Add stock, add buyer, search, mark sold, ask prices..."
+                placeholder="Add stock or buyer — include name, age, sex and weight for best matches..."
                 style={{ flex: 1, padding: '11px 14px', borderRadius: 9, border: '2px solid #2d4a2d', fontFamily: 'Georgia,serif', fontSize: 14, background: '#fff', outline: 'none', color: '#111' }}
               />
               <button onClick={function() { send(); }} disabled={busy || !input.trim()} style={{
@@ -858,7 +893,7 @@ export default function App() {
           <div style={{ flex: 1, overflowY: 'auto', padding: 14 }}>
             {activeBuyers.length === 0 ? (
               <div style={{ textAlign: 'center', color: '#aaa', marginTop: 60, fontSize: 14 }}>
-                No buyers yet. Use Chat to add one — e.g. "Johnson looking for 60 Angus R2 steers up to $900"
+                No buyers yet. Use Chat to add one — e.g. "Johnson looking for 60 Angus R2 steers around 400kg up to $900"
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -884,7 +919,7 @@ export default function App() {
                           <strong>{b.breed || 'Any breed'}</strong>
                           {b.age ? (' - ' + b.age) : ''}
                           {b.quantity ? (' - ' + b.quantity + ' head') : ''}
-{b.weightKg ? (' - ' + b.weightKg + 'kg') : ''}
+                          {b.weightKg ? (' - ' + b.weightKg + 'kg') : ''}
                         </div>
                         {b.maxPricePerHead && <div style={{ fontSize: 12, color: '#2d6a4f', fontWeight: 'bold' }}>{'Up to $' + b.maxPricePerHead + '/hd'}</div>}
                         {b.notes && <div style={{ fontSize: 12, color: '#888' }}>{b.notes}</div>}
@@ -908,7 +943,7 @@ export default function App() {
           <div style={{ flex: 1, overflowY: 'auto', padding: 14 }}>
             {allMatches.length === 0 ? (
               <div style={{ textAlign: 'center', color: '#aaa', marginTop: 60, fontSize: 14 }}>
-                No matches yet. Add stock and buyers and I will find matches automatically!
+                No quality matches yet. Make sure listings include name, age, sex and weight for accurate matching.
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -927,6 +962,7 @@ export default function App() {
                             {m.listing.age ? ' ' + m.listing.age : ''}
                           </div>
                           <div style={{ fontSize: 12, color: '#888' }}>{m.listing.quantity + ' head'}</div>
+                          {m.listing.weightKg && <div style={{ fontSize: 12, color: '#888' }}>{m.listing.weightKg + 'kg'}</div>}
                           {m.listing.pricePerHead && <div style={{ fontSize: 12, color: '#2d6a4f', fontWeight: 'bold' }}>{'$' + m.listing.pricePerHead + '/hd'}</div>}
                           {m.listing.location && <div style={{ fontSize: 11, color: '#aaa' }}>{m.listing.location}</div>}
                         </div>
@@ -935,6 +971,7 @@ export default function App() {
                           <div style={{ fontSize: 14, fontWeight: 'bold', color: '#1a2e1a' }}>{m.buyer.name}</div>
                           {m.buyer.phone && <div style={{ fontSize: 12, color: '#888' }}>{m.buyer.phone}</div>}
                           <div style={{ fontSize: 12, color: '#333' }}>{'Wants: ' + (m.buyer.quantity ? m.buyer.quantity + ' head' : 'flexible')}</div>
+                          {m.buyer.weightKg && <div style={{ fontSize: 12, color: '#888' }}>{'~' + m.buyer.weightKg + 'kg'}</div>}
                           {m.buyer.maxPricePerHead && <div style={{ fontSize: 12, color: '#2d6a4f' }}>{'Up to $' + m.buyer.maxPricePerHead + '/hd'}</div>}
                         </div>
                       </div>
