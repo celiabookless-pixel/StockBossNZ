@@ -1,5 +1,10 @@
 import { useState, useRef, useEffect } from 'react';
-import { getListings, saveAllListings, getMessages, saveMessage, uploadPhoto, deleteListing, getBuyers, saveBuyer, deleteBuyer, signIn, signUp, signOut, getSession, supabase } from './supabase';
+import { getListings, saveAllListings, getMessages, saveMessage, uploadPhoto, deleteListing, getBuyers, saveBuyer, deleteBuyer, signIn, signUp, signOut, getSession, supabase, saveMarketData, clearMarketData } from './supabase';
+
+const ADMIN_EMAIL = 'celia.bee@hotmail.com';
+const ADMIN_PASSWORD = 'stockboss2024';
+const LOGO_URL = 'https://nnbmafrcosibaubzkkaf.supabase.co/storage/v1/object/public/Assets/Untitled%20design.png';
+const FARM_PHOTO_URL = 'https://nnbmafrcosibaubzkkaf.supabase.co/storage/v1/object/public/Assets/farm.jpg';
 
 const SYSTEM_PROMPT = `You are StockBossNZ, a smart livestock matching AI for stock agents in New Zealand and Australia. Respond ONLY with raw JSON, no markdown, no backticks, no explanation.
 
@@ -57,26 +62,19 @@ Buyer request shape:
 }
 
 MINIMUM DATA REQUIREMENTS:
-Before saving any stock listing or buyer request, you MUST have at least these 3 fields:
+Before saving any stock listing or buyer request, you MUST have at least these fields:
 1. name (seller or buyer name)
-2. age (e.g. R2, weaner, R3, mixed age) 
+2. age (e.g. R2, weaner, R3, mixed age)
 3. category/sex (steers, heifers, cows, bulls, calves etc)
-4. weightKg — EXCEPT if age is "mixed age" or "mixed" in which case weightKg can be null (set notes to "mixed age - any weight")
+4. weightKg - EXCEPT if age is "mixed age" or "mixed" in which case weightKg can be null (set notes to "mixed age - any weight")
 
-If any of these are missing, do NOT save the listing or buyer. Instead set action to "chat" and ask specifically for what is missing. For example:
-- "I need a weight or weight range to save this — what do they weigh roughly?"
-- "What sex are they — steers, heifers, bulls?"
-- "What age are they — R2, weaners, mixed age?"
-- "Who is the seller/buyer name?"
-
-Once you have the minimum fields, save the listing and extract any extra detail mentioned (breed, quantity, price, location, condition etc) to improve match quality.
-
-Special rule: If age contains "mixed" (e.g. "mixed age", "mixed"), set weightKg to null and add "mixed age - any weight" to notes.
+If any of these are missing, do NOT save. Instead set action to "chat" and ask specifically for what is missing.
+Special rule: If age contains "mixed", set weightKg to null and add "mixed age - any weight" to notes.
 
 Rules:
 - add_stock: new listing from seller info
 - sell_stock: mark stock as sold or partial, update quantitySold, dateSold, buyer info
-- query_stock: find available/partial/matched listings matching request - ONLY return listings where category AND age match exactly what was asked. Do not enter other categories or ages. If someone asks for R2 steers only return steers that are R2. Quantity is flexible but category and age must match exactly.
+- query_stock: find available/partial/matched listings matching request - ONLY return listings where category AND age match exactly what was asked. Do not return other categories or ages. Quantity is flexible but category and age must match exactly.
 - add_buyer: new buyer request
 - query_buyers: find looking buyers that match available stock
 - price_estimate: estimate from sold listings history, use actualSalePrice if available as it is more accurate than pricePerHead
@@ -110,12 +108,7 @@ async function askClaude(userMsg, listings, buyers, history) {
   const res = await fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-5',
-      max_tokens: 2000,
-      system: SYSTEM_PROMPT,
-      messages: messages
-    })
+    body: JSON.stringify({ model: 'claude-sonnet-4-5', max_tokens: 2000, system: SYSTEM_PROMPT, messages: messages })
   });
   if (!res.ok) {
     const e = await res.json().catch(function() { return {}; });
@@ -132,29 +125,15 @@ function findMatches(listings, buyers) {
   var matches = [];
   buyers.filter(function(b) { return b.status === 'looking'; }).forEach(function(buyer) {
     listings.filter(function(l) { return l.status === 'available' || l.status === 'partial'; }).forEach(function(listing) {
-      // Category must match as hard filter
       if (!buyer.category || !listing.category || buyer.category !== listing.category) return;
-
       var score = 0;
-
-      // Weight score — up to 3 points (skip if either is mixed age / null)
       var isMixedAge = buyer.age && buyer.age.toLowerCase().includes('mixed');
       if (!isMixedAge && buyer.weightKg && listing.weightKg) {
         var diff = Math.abs(buyer.weightKg - listing.weightKg);
         if (diff <= 70) score += Math.round(3 * (1 - diff / 70));
       }
-
-      // Age score — 3 points (skip if buyer is mixed age)
-      if (!isMixedAge && buyer.age && listing.age && listing.age.toLowerCase().includes(buyer.age.toLowerCase())) {
-        score += 3;
-      }
-
-      // Breed score — 2 points
-      if (buyer.breed && listing.breed && listing.breed.toLowerCase().includes(buyer.breed.toLowerCase())) {
-        score += 2;
-      }
-
-      // Only include if score meets minimum threshold
+      if (!isMixedAge && buyer.age && listing.age && listing.age.toLowerCase().includes(buyer.age.toLowerCase())) score += 3;
+      if (buyer.breed && listing.breed && listing.breed.toLowerCase().includes(buyer.breed.toLowerCase())) score += 2;
       if (score >= MIN_MATCH_SCORE) {
         matches.push({ buyerId: buyer.id, listingId: listing.id, score: score, buyer: buyer, listing: listing });
       }
@@ -162,6 +141,33 @@ function findMatches(listings, buyers) {
   });
   matches.sort(function(a, b) { return b.score - a.score; });
   return matches;
+}
+
+function parseCSV(text) {
+  var lines = text.trim().split('\n');
+  if (lines.length < 2) return [];
+  var headers = lines[0].split(',').map(function(h) { return h.trim().replace(/"/g, ''); });
+  var rows = [];
+  for (var i = 1; i < lines.length; i++) {
+    var vals = lines[i].split(',').map(function(v) { return v.trim().replace(/"/g, ''); });
+    if (vals.length < 3) continue;
+    var row = {};
+    headers.forEach(function(h, idx) { row[h] = vals[idx] || null; });
+    rows.push({
+      source: row['Source'] || null, sale_no: row['Sale_No'] || null,
+      saleyard: row['Saleyard'] || null, sale_date: row['Sale_Date'] || null,
+      class: row['Class'] || null, sub_class: row['Sub_Class'] || null,
+      weight_range_kg: row['Weight_Range_kg'] || null,
+      qty_sold: row['Qty_Sold'] ? parseInt(row['Qty_Sold']) : null,
+      ave_price_per_kg: row['Ave_Price_per_KG_NZD'] ? parseFloat(row['Ave_Price_per_KG_NZD']) : null,
+      min_price_per_kg: row['Min_Price_per_KG_NZD'] ? parseFloat(row['Min_Price_per_KG_NZD']) : null,
+      max_price_per_kg: row['Max_Price_per_KG_NZD'] ? parseFloat(row['Max_Price_per_KG_NZD']) : null,
+      ave_price_per_hd: row['Ave_Price_per_HD_NZD'] ? parseFloat(row['Ave_Price_per_HD_NZD']) : null,
+      min_price_per_hd: row['Min_Price_per_HD_NZD'] ? parseFloat(row['Min_Price_per_HD_NZD']) : null,
+      max_price_per_hd: row['Max_Price_per_HD_NZD'] ? parseFloat(row['Max_Price_per_HD_NZD']) : null,
+    });
+  }
+  return rows;
 }
 
 function AuthScreen() {
@@ -174,18 +180,11 @@ function AuthScreen() {
 
   async function handleSubmit() {
     if (!email.trim() || !password.trim()) return;
-    setBusy(true);
-    setErr(null);
+    setBusy(true); setErr(null);
     try {
-      if (mode === 'login') {
-        await signIn(email.trim(), password.trim());
-      } else {
-        await signUp(email.trim(), password.trim());
-        setDone(true);
-      }
-    } catch(e) {
-      setErr(e.message || 'Something went wrong');
-    }
+      if (mode === 'login') { await signIn(email.trim(), password.trim()); }
+      else { await signUp(email.trim(), password.trim()); setDone(true); }
+    } catch(e) { setErr(e.message || 'Something went wrong'); }
     setBusy(false);
   }
 
@@ -195,12 +194,8 @@ function AuthScreen() {
         <div style={{ background: '#fff', borderRadius: 16, padding: 32, maxWidth: 380, width: '100%', textAlign: 'center' }}>
           <div style={{ fontSize: 40, marginBottom: 16 }}>📬</div>
           <div style={{ fontSize: 18, fontWeight: 'bold', color: '#1a2e1a', marginBottom: 8 }}>Check your email</div>
-          <div style={{ fontSize: 14, color: '#666', marginBottom: 16, lineHeight: 1.6 }}>
-            We have sent a confirmation link to <strong>{email}</strong>. Click the link to verify your email, then wait for an admin to approve your account.
-          </div>
-          <button onClick={function() { setDone(false); setMode('login'); }} style={{ background: '#2d4a2d', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 24px', fontSize: 14, cursor: 'pointer', fontFamily: 'Georgia,serif' }}>
-            Back to Login
-          </button>
+          <div style={{ fontSize: 14, color: '#666', marginBottom: 16, lineHeight: 1.6 }}>Confirmation link sent to <strong>{email}</strong>. Click it to verify, then wait for admin approval.</div>
+          <button onClick={function() { setDone(false); setMode('login'); }} style={{ background: '#2d4a2d', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 24px', fontSize: 14, cursor: 'pointer', fontFamily: 'Georgia,serif' }}>Back to Login</button>
         </div>
       </div>
     );
@@ -210,74 +205,27 @@ function AuthScreen() {
     <div style={{ fontFamily: 'Georgia,serif', background: '#1a2e1a', minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
       <div style={{ background: '#fff', borderRadius: 16, padding: 32, maxWidth: 380, width: '100%' }}>
         <div style={{ textAlign: 'center', marginBottom: 24 }}>
-          <div style={{ fontSize: 36, marginBottom: 8 }}>🐄</div>
+          <img src={LOGO_URL} alt="StockBossNZ" style={{ width: 64, height: 64, objectFit: 'contain', marginBottom: 8 }} onError={function(e) { e.target.outerHTML = '<div style="font-size:40px;margin-bottom:8px">🐄</div>'; }} />
           <div style={{ fontSize: 20, fontWeight: 'bold', color: '#1a2e1a', letterSpacing: 1 }}>STOCKBOSSNZ</div>
           <div style={{ fontSize: 10, color: '#a0b89a', letterSpacing: 2 }}>SMART LIVESTOCK MATCHING</div>
         </div>
-
         <div style={{ display: 'flex', marginBottom: 24, background: '#f5f0e8', borderRadius: 8, padding: 4 }}>
-          <button onClick={function() { setMode('login'); setErr(null); }} style={{
-            flex: 1, padding: '8px', border: 'none', borderRadius: 6, cursor: 'pointer',
-            fontFamily: 'Georgia,serif', fontSize: 13, fontWeight: 'bold',
-            background: mode === 'login' ? '#2d4a2d' : 'transparent',
-            color: mode === 'login' ? '#fff' : '#666'
-          }}>Log In</button>
-          <button onClick={function() { setMode('signup'); setErr(null); }} style={{
-            flex: 1, padding: '8px', border: 'none', borderRadius: 6, cursor: 'pointer',
-            fontFamily: 'Georgia,serif', fontSize: 13, fontWeight: 'bold',
-            background: mode === 'signup' ? '#2d4a2d' : 'transparent',
-            color: mode === 'signup' ? '#fff' : '#666'
-          }}>Sign Up</button>
+          <button onClick={function() { setMode('login'); setErr(null); }} style={{ flex: 1, padding: '8px', border: 'none', borderRadius: 6, cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 13, fontWeight: 'bold', background: mode === 'login' ? '#2d4a2d' : 'transparent', color: mode === 'login' ? '#fff' : '#666' }}>Log In</button>
+          <button onClick={function() { setMode('signup'); setErr(null); }} style={{ flex: 1, padding: '8px', border: 'none', borderRadius: 6, cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 13, fontWeight: 'bold', background: mode === 'signup' ? '#2d4a2d' : 'transparent', color: mode === 'signup' ? '#fff' : '#666' }}>Sign Up</button>
         </div>
-
         <div style={{ marginBottom: 12 }}>
           <div style={{ fontSize: 12, color: '#555', marginBottom: 4 }}>Email</div>
-          <input
-            value={email}
-            onChange={function(e) { setEmail(e.target.value); }}
-            onKeyDown={function(e) { if (e.key === 'Enter') handleSubmit(); }}
-            type="email"
-            placeholder="your@email.com"
-            style={{ width: '100%', padding: '10px 12px', border: '2px solid #ddd', borderRadius: 8, fontFamily: 'Georgia,serif', fontSize: 14, boxSizing: 'border-box', outline: 'none' }}
-          />
+          <input value={email} onChange={function(e) { setEmail(e.target.value); }} onKeyDown={function(e) { if (e.key === 'Enter') handleSubmit(); }} type="email" placeholder="your@email.com" style={{ width: '100%', padding: '10px 12px', border: '2px solid #ddd', borderRadius: 8, fontFamily: 'Georgia,serif', fontSize: 14, boxSizing: 'border-box', outline: 'none' }} />
         </div>
-
         <div style={{ marginBottom: 20 }}>
           <div style={{ fontSize: 12, color: '#555', marginBottom: 4 }}>Password</div>
-          <input
-            value={password}
-            onChange={function(e) { setPassword(e.target.value); }}
-            onKeyDown={function(e) { if (e.key === 'Enter') handleSubmit(); }}
-            type="password"
-            placeholder="••••••••"
-            style={{ width: '100%', padding: '10px 12px', border: '2px solid #ddd', borderRadius: 8, fontFamily: 'Georgia,serif', fontSize: 14, boxSizing: 'border-box', outline: 'none' }}
-          />
+          <input value={password} onChange={function(e) { setPassword(e.target.value); }} onKeyDown={function(e) { if (e.key === 'Enter') handleSubmit(); }} type="password" placeholder="••••••••" style={{ width: '100%', padding: '10px 12px', border: '2px solid #ddd', borderRadius: 8, fontFamily: 'Georgia,serif', fontSize: 14, boxSizing: 'border-box', outline: 'none' }} />
         </div>
-
-        {err && (
-          <div style={{ background: '#fff0f0', border: '1px solid #ffcccc', borderRadius: 7, padding: '9px 13px', fontSize: 12, color: '#c00', marginBottom: 16 }}>
-            {err}
-          </div>
-        )}
-
-        <button
-          onClick={handleSubmit}
-          disabled={busy || !email.trim() || !password.trim()}
-          style={{
-            width: '100%', padding: '12px', border: 'none', borderRadius: 8,
-            background: (busy || !email.trim() || !password.trim()) ? '#999' : '#2d4a2d',
-            color: '#fff', cursor: (busy || !email.trim() || !password.trim()) ? 'not-allowed' : 'pointer',
-            fontFamily: 'Georgia,serif', fontSize: 15, fontWeight: 'bold'
-          }}
-        >
+        {err && <div style={{ background: '#fff0f0', border: '1px solid #ffcccc', borderRadius: 7, padding: '9px 13px', fontSize: 12, color: '#c00', marginBottom: 16 }}>{err}</div>}
+        <button onClick={handleSubmit} disabled={busy || !email.trim() || !password.trim()} style={{ width: '100%', padding: '12px', border: 'none', borderRadius: 8, background: (busy || !email.trim() || !password.trim()) ? '#999' : '#2d4a2d', color: '#fff', cursor: (busy || !email.trim() || !password.trim()) ? 'not-allowed' : 'pointer', fontFamily: 'Georgia,serif', fontSize: 15, fontWeight: 'bold' }}>
           {busy ? 'Please wait...' : mode === 'login' ? 'Log In' : 'Sign Up'}
         </button>
-
-        {mode === 'signup' && (
-          <div style={{ fontSize: 11, color: '#aaa', textAlign: 'center', marginTop: 12, lineHeight: 1.5 }}>
-            After signing up you will need to confirm your email and wait for admin approval before accessing the app.
-          </div>
-        )}
+        {mode === 'signup' && <div style={{ fontSize: 11, color: '#aaa', textAlign: 'center', marginTop: 12, lineHeight: 1.5 }}>After signing up you will need to confirm your email and wait for admin approval.</div>}
       </div>
     </div>
   );
@@ -289,17 +237,112 @@ function PendingScreen({ onSignOut }) {
       <div style={{ background: '#fff', borderRadius: 16, padding: 32, maxWidth: 380, width: '100%', textAlign: 'center' }}>
         <div style={{ fontSize: 40, marginBottom: 16 }}>⏳</div>
         <div style={{ fontSize: 18, fontWeight: 'bold', color: '#1a2e1a', marginBottom: 8 }}>Awaiting Approval</div>
-        <div style={{ fontSize: 14, color: '#666', marginBottom: 24, lineHeight: 1.6 }}>
-          Your account is pending approval from an admin. You will be able to access StockBossNZ once approved.
-        </div>
-        <button onClick={onSignOut} style={{ background: 'none', border: '1px solid #ccc', color: '#666', borderRadius: 8, padding: '10px 24px', fontSize: 13, cursor: 'pointer', fontFamily: 'Georgia,serif' }}>
-          Sign Out
-        </button>
+        <div style={{ fontSize: 14, color: '#666', marginBottom: 24, lineHeight: 1.6 }}>Your account is pending admin approval.</div>
+        <button onClick={onSignOut} style={{ background: 'none', border: '1px solid #ccc', color: '#666', borderRadius: 8, padding: '10px 24px', fontSize: 13, cursor: 'pointer', fontFamily: 'Georgia,serif' }}>Sign Out</button>
       </div>
     </div>
   );
 }
 
+function AdminPanel({ listings, buyers, onNotification }) {
+  var [adminUnlocked, setAdminUnlocked] = useState(false);
+  var [adminPass, setAdminPass] = useState('');
+  var [adminErr, setAdminErr] = useState(null);
+  var [csvBusy, setCsvBusy] = useState(false);
+  var [csvMsg, setCsvMsg] = useState(null);
+  var [clearConfirm, setClearConfirm] = useState(false);
+  var fileRef = useRef(null);
+
+  function unlockAdmin() {
+    if (adminPass === ADMIN_PASSWORD) { setAdminUnlocked(true); setAdminErr(null); }
+    else { setAdminErr('Incorrect password'); }
+  }
+
+  async function handleCSVUpload(e) {
+    var file = e.target.files[0]; if (!file) return;
+    setCsvBusy(true); setCsvMsg(null);
+    try {
+      var text = await file.text();
+      var rows = parseCSV(text);
+      if (rows.length === 0) { setCsvMsg('No valid rows found in CSV.'); setCsvBusy(false); return; }
+      await saveMarketData(rows);
+      setCsvMsg('Uploaded ' + rows.length + ' rows successfully!');
+      onNotification('Market data uploaded — ' + rows.length + ' rows!');
+    } catch(e) { setCsvMsg('Error: ' + e.message); }
+    setCsvBusy(false);
+    if (fileRef.current) fileRef.current.value = '';
+  }
+
+  async function handleClear() {
+    try { await clearMarketData(); setClearConfirm(false); setCsvMsg('Market data cleared.'); onNotification('Market data cleared.'); }
+    catch(e) { setCsvMsg('Error: ' + e.message); }
+  }
+
+  var sold = listings.filter(function(l) { return l.status === 'sold'; });
+  var available = listings.filter(function(l) { return l.status === 'available' || l.status === 'partial'; });
+  var activeBuyers = buyers.filter(function(b) { return b.status === 'looking'; });
+  var totalRevenue = sold.reduce(function(sum, l) { return sum + ((l.actualSalePrice || l.pricePerHead || 0) * (l.quantitySold || l.quantity || 0)); }, 0);
+
+  if (!adminUnlocked) {
+    return (
+      <div style={{ padding: 20 }}>
+        <div style={{ background: '#fff', borderRadius: 12, padding: 24, maxWidth: 340, margin: '40px auto', border: '1px solid #ddd' }}>
+          <div style={{ fontSize: 16, fontWeight: 'bold', color: '#1a2e1a', marginBottom: 4 }}>Admin Access</div>
+          <div style={{ fontSize: 12, color: '#888', marginBottom: 16 }}>Enter admin password to continue</div>
+          <input value={adminPass} onChange={function(e) { setAdminPass(e.target.value); }} onKeyDown={function(e) { if (e.key === 'Enter') unlockAdmin(); }} type="password" placeholder="Password" style={{ width: '100%', padding: '10px', border: '2px solid #ddd', borderRadius: 8, fontFamily: 'Georgia,serif', fontSize: 14, boxSizing: 'border-box', marginBottom: 12, outline: 'none' }} />
+          {adminErr && <div style={{ color: '#c00', fontSize: 12, marginBottom: 12 }}>{adminErr}</div>}
+          <button onClick={unlockAdmin} style={{ width: '100%', padding: '10px', background: '#2d4a2d', color: '#fff', border: 'none', borderRadius: 8, fontFamily: 'Georgia,serif', fontSize: 14, fontWeight: 'bold', cursor: 'pointer' }}>Unlock</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ flex: 1, overflowY: 'auto', padding: 14 }}>
+      <div style={{ fontSize: 13, fontWeight: 'bold', color: '#1a2e1a', marginBottom: 10, letterSpacing: 1 }}>ADMIN PANEL</div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 14 }}>
+        {[{ label: 'Active Listings', value: available.length }, { label: 'Active Buyers', value: activeBuyers.length }, { label: 'Total Sold', value: sold.length }, { label: 'Est. Revenue', value: '$' + Math.round(totalRevenue).toLocaleString() }].map(function(s) {
+          return (
+            <div key={s.label} style={{ background: '#fff', borderRadius: 8, padding: '12px 14px', border: '1px solid #ddd' }}>
+              <div style={{ fontSize: 10, color: '#888', marginBottom: 4 }}>{s.label}</div>
+              <div style={{ fontSize: 20, fontWeight: 'bold', color: '#1a2e1a' }}>{s.value}</div>
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ background: '#fff', borderRadius: 10, border: '1px solid #ddd', padding: 16, marginBottom: 12 }}>
+        <div style={{ fontSize: 13, fontWeight: 'bold', color: '#1a2e1a', marginBottom: 4 }}>Market Reference Data</div>
+        <div style={{ fontSize: 11, color: '#888', marginBottom: 12, lineHeight: 1.5 }}>Upload your PGG Wrightson CSV to power the price estimate feature. Update fortnightly for best results.</div>
+        <input ref={fileRef} type="file" accept=".csv" onChange={handleCSVUpload} style={{ display: 'none' }} />
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button onClick={function() { fileRef.current && fileRef.current.click(); }} disabled={csvBusy} style={{ flex: 1, padding: '10px', background: csvBusy ? '#999' : '#2d4a2d', color: '#fff', border: 'none', borderRadius: 8, fontFamily: 'Georgia,serif', fontSize: 12, fontWeight: 'bold', cursor: csvBusy ? 'not-allowed' : 'pointer' }}>
+            {csvBusy ? 'Uploading...' : 'Upload CSV'}
+          </button>
+          <button onClick={function() { setClearConfirm(true); }} style={{ padding: '10px 14px', background: 'none', border: '1px solid #c0392b', color: '#c0392b', borderRadius: 8, fontFamily: 'Georgia,serif', fontSize: 12, cursor: 'pointer' }}>Clear</button>
+        </div>
+        {csvMsg && <div style={{ marginTop: 10, fontSize: 12, color: csvMsg.startsWith('Error') ? '#c00' : '#2d6a4f', fontWeight: 'bold' }}>{csvMsg}</div>}
+        {clearConfirm && (
+          <div style={{ marginTop: 12, padding: 12, background: '#fff0f0', borderRadius: 8, border: '1px solid #ffcccc' }}>
+            <div style={{ fontSize: 12, color: '#c00', marginBottom: 8 }}>This will delete all market reference data. Are you sure?</div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={function() { setClearConfirm(false); }} style={{ flex: 1, padding: '8px', border: '1px solid #ddd', borderRadius: 6, background: '#fff', cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 11 }}>Cancel</button>
+              <button onClick={handleClear} style={{ flex: 1, padding: '8px', border: 'none', borderRadius: 6, background: '#c0392b', color: '#fff', cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 11, fontWeight: 'bold' }}>Yes, Clear</button>
+            </div>
+          </div>
+        )}
+      </div>
+      <div style={{ background: '#fff', borderRadius: 10, border: '1px solid #ddd', padding: 16, marginBottom: 12 }}>
+        <div style={{ fontSize: 13, fontWeight: 'bold', color: '#1a2e1a', marginBottom: 4 }}>User Approvals</div>
+        <div style={{ fontSize: 11, color: '#888', marginBottom: 12, lineHeight: 1.5 }}>To approve new users, go to Supabase and confirm their email manually.</div>
+        <a href="https://supabase.com/dashboard/project/nnbmafrcosibaubzkkaf/auth/users" target="_blank" rel="noreferrer" style={{ display: 'block', padding: '10px', background: '#f5f0e8', border: '1px solid #ddd', borderRadius: 8, fontFamily: 'Georgia,serif', fontSize: 12, color: '#2d4a2d', textAlign: 'center', textDecoration: 'none', fontWeight: 'bold' }}>Open Supabase Users →</a>
+      </div>
+      <div style={{ background: '#fff', borderRadius: 10, border: '1px solid #ddd', padding: 16 }}>
+        <div style={{ fontSize: 13, fontWeight: 'bold', color: '#1a2e1a', marginBottom: 4 }}>More Admin Features</div>
+        <div style={{ fontSize: 11, color: '#888', lineHeight: 1.5 }}>Coming soon: broadcast messages, bulk listing management, analytics dashboard.</div>
+      </div>
+    </div>
+  );
+}
 export default function App() {
   var [session, setSession] = useState(null);
   var [authLoading, setAuthLoading] = useState(true);
@@ -323,14 +366,11 @@ export default function App() {
   var bottom = useRef(null);
   var fileRef = useRef(null);
 
+  var isAdmin = session && session.user && session.user.email === ADMIN_EMAIL;
+
   useEffect(function() {
-    getSession().then(function(s) {
-      setSession(s);
-      setAuthLoading(false);
-    });
-    var listener = supabase.auth.onAuthStateChange(function(event, s) {
-      setSession(s);
-    });
+    getSession().then(function(s) { setSession(s); setAuthLoading(false); });
+    var listener = supabase.auth.onAuthStateChange(function(event, s) { setSession(s); });
     return function() { listener.data.subscription.unsubscribe(); };
   }, []);
 
@@ -339,119 +379,57 @@ export default function App() {
     async function load() {
       try {
         var results = await Promise.all([getListings(), getBuyers(), getMessages()]);
-        var ls = results[0];
-        var bs = results[1];
-        var ms = results[2];
-        var mapped = ls.map(function(l) {
-          return {
-            id: l.id, seller: l.seller, sellerPhone: l.seller_phone,
-            buyer: l.buyer, buyerPhone: l.buyer_phone,
-            breed: l.breed, category: l.category,
-            age: l.age, weightKg: l.weight_kg, condition: l.condition,
-            location: l.location, trucking: l.trucking, nature: l.nature,
-            quantity: l.quantity, quantitySold: l.quantity_sold,
-            pricePerHead: l.price_per_head, centsPerKg: l.cents_per_kg,
-            actualSalePrice: l.actual_sale_price,
-            notes: l.notes, photoUrl: l.photo_url,
-            dateAdded: l.date_added, dateSold: l.date_sold, status: l.status
-          };
-        });
-        var mappedBuyers = bs.map(function(b) {
-          return {
-            id: b.id, name: b.name, phone: b.phone,
-            breed: b.breed, category: b.category, age: b.age,
-            quantity: b.quantity, weightKg: b.weight_kg || null, maxPricePerHead: b.max_price_per_head,
-            notes: b.notes, dateAdded: b.date_added, status: b.status
-          };
-        });
-        setListings(mapped);
-        setBuyers(mappedBuyers);
-        if (ms.length > 0) {
-          setMsgs(ms);
-        } else {
-          setMsgs([{ from: 'ai', text: "G'day! I'm StockBossNZ. Tell me what stock is for sale or add a buyer. To get a good match I need at least: name, age (e.g. R2, weaner), sex/class (e.g. steers, heifers), and weight — e.g. 'Pete has 80 Angus R2 steers 420kg Hawkes Bay $1100/hd' or 'Johnson looking for 60 Friesian R2 steers around 380kg up to $900'. Mixed age mobs don't need a weight.", extra: null }]);
+        var ls = results[0]; var bs = results[1]; var ms = results[2];
+        var mapped = ls.map(function(l) { return { id: l.id, seller: l.seller, sellerPhone: l.seller_phone, buyer: l.buyer, buyerPhone: l.buyer_phone, breed: l.breed, category: l.category, age: l.age, weightKg: l.weight_kg, condition: l.condition, location: l.location, trucking: l.trucking, nature: l.nature, quantity: l.quantity, quantitySold: l.quantity_sold, pricePerHead: l.price_per_head, centsPerKg: l.cents_per_kg, actualSalePrice: l.actual_sale_price, notes: l.notes, photoUrl: l.photo_url, dateAdded: l.date_added, dateSold: l.date_sold, status: l.status }; });
+        var mappedBuyers = bs.map(function(b) { return { id: b.id, name: b.name, phone: b.phone, breed: b.breed, category: b.category, age: b.age, quantity: b.quantity, weightKg: b.weight_kg || null, maxPricePerHead: b.max_price_per_head, notes: b.notes, dateAdded: b.date_added, status: b.status }; });
+        setListings(mapped); setBuyers(mappedBuyers);
+        if (ms.length > 0) { setMsgs(ms); } else {
+          setMsgs([{ from: 'ai', text: "G'day! I'm StockBossNZ. To add stock or a buyer I need at least: name, age (e.g. R2, weaner), sex/class (e.g. steers, heifers), and weight. Mixed age mobs don't need a weight. Example: 'Pete has 80 Angus R2 steers 420kg Hawkes Bay $1100/hd'", extra: null }]);
         }
-      } catch(e) {
-        setErr('Could not load: ' + e.message);
-      }
+      } catch(e) { setErr('Could not load: ' + e.message); }
       setLoading(false);
     }
     load();
   }, [session]);
 
-  useEffect(function() {
-    if (bottom.current) bottom.current.scrollIntoView({ behavior: 'smooth' });
-  }, [msgs]);
+  useEffect(function() { if (bottom.current) bottom.current.scrollIntoView({ behavior: 'smooth' }); }, [msgs]);
 
-  async function handleSignOut() {
-    await signOut();
-    setSession(null);
-    setListings([]);
-    setBuyers([]);
-    setMsgs([]);
-  }
-
-  function showNotification(text) {
-    setNotification(text);
-    setTimeout(function() { setNotification(null); }, 4000);
-  }
+  async function handleSignOut() { await signOut(); setSession(null); setListings([]); setBuyers([]); setMsgs([]); }
+  function showNotification(text) { setNotification(text); setTimeout(function() { setNotification(null); }, 4000); }
 
   async function send(overrideInput) {
     var msg = (overrideInput || input).trim();
     if (!msg || busy) return;
-    setInput('');
-    setErr(null);
+    setInput(''); setErr(null);
     var userMsg = { from: 'user', text: msg, extra: null };
     var newMsgs = msgs.concat([userMsg]);
-    setMsgs(newMsgs);
-    await saveMessage(userMsg);
-    setBusy(true);
+    setMsgs(newMsgs); await saveMessage(userMsg); setBusy(true);
     try {
       var result = await askClaude(msg, listings, buyers, msgs);
-      var updatedListings = listings;
-      var updatedBuyers = buyers;
-      if (result.listings) {
-        updatedListings = result.listings;
-        setListings(updatedListings);
-        await saveAllListings(updatedListings);
-      }
-      if (result.buyers) {
-        updatedBuyers = result.buyers;
-        setBuyers(updatedBuyers);
-        for (var i = 0; i < updatedBuyers.length; i++) {
-          await saveBuyer(updatedBuyers[i]);
-        }
-      }
+      var updatedListings = listings; var updatedBuyers = buyers;
+      if (result.listings) { updatedListings = result.listings; setListings(updatedListings); await saveAllListings(updatedListings); }
+      if (result.buyers) { updatedBuyers = result.buyers; setBuyers(updatedBuyers); for (var i = 0; i < updatedBuyers.length; i++) { await saveBuyer(updatedBuyers[i]); } }
       if (result.action === 'add_stock') {
-        showNotification('Stock added!');
-        setTab('stock');
+        showNotification('Stock added!'); setTab('stock');
         var matches = findMatches(updatedListings, updatedBuyers);
         if (matches.length > 0) {
-          var matchMsg = { from: 'ai', text: 'Heads up! Found ' + matches.length + ' potential match' + (matches.length > 1 ? 'es' : '') + ' with buyers on your list. Check the Matches tab!', extra: null };
+          var matchMsg = { from: 'ai', text: 'Heads up! Found ' + matches.length + ' potential match' + (matches.length > 1 ? 'es' : '') + ' with buyers. Check the Matches tab!', extra: null };
           newMsgs = newMsgs.concat([{ from: 'ai', text: result.message || 'Done.', extra: result.estimate || null }]);
-          setMsgs(newMsgs.concat([matchMsg]));
-          await saveMessage(matchMsg);
-          setBusy(false);
-          return;
+          setMsgs(newMsgs.concat([matchMsg])); await saveMessage(matchMsg); setBusy(false); return;
         }
       }
       if (result.action === 'add_buyer') {
-        showNotification('Buyer added!');
-        setTab('buyers');
+        showNotification('Buyer added!'); setTab('buyers');
         var matches2 = findMatches(updatedListings, updatedBuyers);
         if (matches2.length > 0) {
           var matchMsg2 = { from: 'ai', text: 'Great news! Found ' + matches2.length + ' potential match' + (matches2.length > 1 ? 'es' : '') + ' in current stock. Check the Matches tab!', extra: null };
           newMsgs = newMsgs.concat([{ from: 'ai', text: result.message || 'Done.', extra: null }]);
-          setMsgs(newMsgs.concat([matchMsg2]));
-          await saveMessage(matchMsg2);
-          setBusy(false);
-          return;
+          setMsgs(newMsgs.concat([matchMsg2])); await saveMessage(matchMsg2); setBusy(false); return;
         }
       }
       if (result.action === 'sell_stock') setTab('sold');
       var aiMsg = { from: 'ai', text: result.message || 'Done.', extra: result.estimate || null };
-      setMsgs(newMsgs.concat([aiMsg]));
-      await saveMessage(aiMsg);
+      setMsgs(newMsgs.concat([aiMsg])); await saveMessage(aiMsg);
     } catch(e) {
       setErr(e.message || 'Unknown error');
       setMsgs(newMsgs.concat([{ from: 'ai', text: 'Error: ' + (e.message || 'Unknown error'), extra: null }]));
@@ -460,111 +438,55 @@ export default function App() {
   }
 
   async function handlePhoto(e) {
-    var file = e.target.files[0];
-    if (!file) return;
-    setBusy(true);
-    try {
-      await uploadPhoto(file);
-      showNotification('Photo uploaded!');
-    } catch(e) {
-      setErr('Upload failed: ' + e.message);
-    }
+    var file = e.target.files[0]; if (!file) return; setBusy(true);
+    try { await uploadPhoto(file); showNotification('Photo uploaded!'); } catch(e) { setErr('Upload failed: ' + e.message); }
     setBusy(false);
   }
 
   function exportData() {
     var json = JSON.stringify({ listings: listings, buyers: buyers }, null, 2);
     var blob = new Blob([json], { type: 'application/json' });
-    var url = URL.createObjectURL(blob);
-    var a = document.createElement('a');
-    a.href = url;
-    a.download = 'stockbossnz_export_' + new Date().toISOString().split('T')[0] + '.json';
-    a.click();
+    var url = URL.createObjectURL(blob); var a = document.createElement('a'); a.href = url;
+    a.download = 'stockbossnz_export_' + new Date().toISOString().split('T')[0] + '.json'; a.click();
   }
 
   async function handleDeleteListing(id) {
-    try {
-      await deleteListing(id);
-      setListings(listings.filter(function(l) { return l.id !== id; }));
-      setConfirmDelete(null);
-      showNotification('Listing deleted.');
-    } catch(e) {
-      setErr('Delete failed: ' + e.message);
-    }
+    try { await deleteListing(id); setListings(listings.filter(function(l) { return l.id !== id; })); setConfirmDelete(null); showNotification('Listing deleted.'); } catch(e) { setErr('Delete failed: ' + e.message); }
   }
 
   async function handleDeleteBuyer(id) {
-    try {
-      await deleteBuyer(id);
-      setBuyers(buyers.filter(function(b) { return b.id !== id; }));
-      setConfirmDeleteBuyer(null);
-      showNotification('Buyer request deleted.');
-    } catch(e) {
-      setErr('Delete failed: ' + e.message);
-    }
+    try { await deleteBuyer(id); setBuyers(buyers.filter(function(b) { return b.id !== id; })); setConfirmDeleteBuyer(null); showNotification('Buyer request deleted.'); } catch(e) { setErr('Delete failed: ' + e.message); }
   }
 
   async function markMatched(listing) {
-    var updated = listings.map(function(l) {
-      return l.id === listing.id ? Object.assign({}, l, { status: 'matched' }) : l;
-    });
-    setListings(updated);
-    await saveAllListings(updated);
-    showNotification('Moved to In Talks!');
+    var updated = listings.map(function(l) { return l.id === listing.id ? Object.assign({}, l, { status: 'matched' }) : l; });
+    setListings(updated); await saveAllListings(updated); showNotification('Moved to In Talks!');
   }
 
   async function reList(listing) {
-    var updated = listings.map(function(l) {
-      return l.id === listing.id ? Object.assign({}, l, { status: 'available' }) : l;
-    });
-    setListings(updated);
-    await saveAllListings(updated);
-    showNotification('Re-listed as available!');
+    var updated = listings.map(function(l) { return l.id === listing.id ? Object.assign({}, l, { status: 'available' }) : l; });
+    setListings(updated); await saveAllListings(updated); showNotification('Re-listed as available!');
   }
 
   async function saveSell() {
     if (!sellModal) return;
     var rem = sellModal.quantity - (sellModal.quantitySold || 0);
     var qty = sellQty ? parseInt(sellQty) : rem;
-    if (isNaN(qty) || qty <= 0) qty = rem;
-    if (qty > rem) qty = rem;
+    if (isNaN(qty) || qty <= 0) qty = rem; if (qty > rem) qty = rem;
     var newSold = (sellModal.quantitySold || 0) + qty;
     var newStatus = newSold >= sellModal.quantity ? 'sold' : 'partial';
     var updated = listings.map(function(l) {
       if (l.id !== sellModal.id) return l;
-      return Object.assign({}, l, {
-        quantitySold: newSold,
-        buyer: sellBuyer || l.buyer || null,
-        actualSalePrice: sellPrice ? parseFloat(sellPrice) : null,
-        dateSold: new Date().toISOString(),
-        status: newStatus
-      });
+      return Object.assign({}, l, { quantitySold: newSold, buyer: sellBuyer || l.buyer || null, actualSalePrice: sellPrice ? parseFloat(sellPrice) : null, dateSold: new Date().toISOString(), status: newStatus });
     });
-    setListings(updated);
-    await saveAllListings(updated);
-    setSellModal(null);
-    setSellQty('');
-    setSellBuyer('');
-    setSellPrice('');
-    showNotification(qty + ' head marked as sold!');
-    setTab('sold');
+    setListings(updated); await saveAllListings(updated);
+    setSellModal(null); setSellQty(''); setSellBuyer(''); setSellPrice('');
+    showNotification(qty + ' head marked as sold!'); setTab('sold');
   }
 
-  if (authLoading) {
-    return (
-      <div style={{ fontFamily: 'Georgia,serif', background: '#1a2e1a', minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#e8dcc8', fontSize: 18 }}>
-        Loading...
-      </div>
-    );
-  }
-
-  if (!session) {
-    return <AuthScreen />;
-  }
-
-  if (!session.user.email_confirmed_at) {
-    return <PendingScreen onSignOut={handleSignOut} />;
-  }
+  if (authLoading) return <div style={{ fontFamily: 'Georgia,serif', background: '#1a2e1a', minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#e8dcc8', fontSize: 18 }}>Loading...</div>;
+  if (!session) return <AuthScreen />;
+  if (!session.user.email_confirmed_at) return <PendingScreen onSignOut={handleSignOut} />;
 
   var available = listings.filter(function(l) { return l.status === 'available' || l.status === 'partial'; });
   var matched = listings.filter(function(l) { return l.status === 'matched'; });
@@ -574,28 +496,24 @@ export default function App() {
     return !dismissedMatches.some(function(d) { return d.buyerId === m.buyerId && d.listingId === m.listingId; });
   });
   var categories = ['all'].concat([...new Set(available.map(function(l) { return l.category; }).filter(Boolean))]);
-
   var shownStock = tab === 'sold' ? sold : tab === 'matched' ? matched : available;
-  if ((tab === 'stock' || tab === 'matched') && filterCat !== 'all') {
-    shownStock = shownStock.filter(function(l) { return l.category === filterCat; });
-  }
+  if ((tab === 'stock' || tab === 'matched') && filterCat !== 'all') shownStock = shownStock.filter(function(l) { return l.category === filterCat; });
+  if (loading) return <div style={{ fontFamily: 'Georgia,serif', background: '#1a2e1a', minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#e8dcc8', fontSize: 18 }}>Loading StockBossNZ...</div>;
 
-  if (loading) {
-    return (
-      <div style={{ fontFamily: 'Georgia,serif', background: '#1a2e1a', minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#e8dcc8', fontSize: 18 }}>
-        Loading StockBossNZ...
-      </div>
-    );
-  }
+  var tabs = [
+    { k: 'chat', label: 'Chat' },
+    { k: 'stock', label: 'Sellers (' + available.length + ')' },
+    { k: 'buyers', label: 'Buyers (' + activeBuyers.length + ')' },
+    { k: 'matches', label: 'Matches (' + allMatches.length + ')' },
+    { k: 'matched', label: 'In Talks (' + matched.length + ')' },
+    { k: 'sold', label: 'Sold (' + sold.length + ')' }
+  ];
+  if (isAdmin) tabs.push({ k: 'admin', label: 'Admin' });
 
   return (
     <div style={{ fontFamily: 'Georgia,serif', background: '#f5f0e8', minHeight: '100vh', display: 'flex', flexDirection: 'column', maxWidth: 900, margin: '0 auto' }}>
 
-      {notification && (
-        <div style={{ position: 'fixed', top: 16, left: '50%', transform: 'translateX(-50%)', background: '#27ae60', color: '#fff', padding: '12px 24px', borderRadius: 10, fontSize: 14, fontWeight: 'bold', zIndex: 1000, boxShadow: '0 4px 20px rgba(0,0,0,0.2)' }}>
-          {notification}
-        </div>
-      )}
+      {notification && <div style={{ position: 'fixed', top: 16, left: '50%', transform: 'translateX(-50%)', background: '#27ae60', color: '#fff', padding: '12px 24px', borderRadius: 10, fontSize: 14, fontWeight: 'bold', zIndex: 1000, boxShadow: '0 4px 20px rgba(0,0,0,0.2)' }}>{notification}</div>}
 
       {confirmDelete && (
         <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
@@ -629,29 +547,12 @@ export default function App() {
             <div style={{ fontSize: 16, fontWeight: 'bold', color: '#1a2e1a', marginBottom: 4 }}>Mark as Sold</div>
             <div style={{ fontSize: 13, color: '#888', marginBottom: 16 }}>{sellModal.seller + ' - ' + sellModal.breed + (sellModal.age ? ' ' + sellModal.age : '')}</div>
             <div style={{ fontSize: 12, color: '#555', marginBottom: 6 }}>{'How many head sold? (blank = all ' + (sellModal.quantity - (sellModal.quantitySold || 0)) + ' remaining)'}</div>
-            <input
-              value={sellQty}
-              onChange={function(e) { setSellQty(e.target.value); }}
-              type="number"
-              placeholder={'All ' + (sellModal.quantity - (sellModal.quantitySold || 0)) + ' head'}
-              style={{ width: '100%', padding: '10px', border: '1px solid #ddd', borderRadius: 8, fontFamily: 'Georgia,serif', fontSize: 13, marginBottom: 12, boxSizing: 'border-box' }}
-            />
+            <input value={sellQty} onChange={function(e) { setSellQty(e.target.value); }} type="number" placeholder={'All ' + (sellModal.quantity - (sellModal.quantitySold || 0)) + ' head'} style={{ width: '100%', padding: '10px', border: '1px solid #ddd', borderRadius: 8, fontFamily: 'Georgia,serif', fontSize: 13, marginBottom: 12, boxSizing: 'border-box' }} />
             <div style={{ fontSize: 12, color: '#555', marginBottom: 6 }}>Buyer name and/or phone (optional):</div>
-            <input
-              value={sellBuyer}
-              onChange={function(e) { setSellBuyer(e.target.value); }}
-              placeholder="e.g. Johnson 0421 234 567"
-              style={{ width: '100%', padding: '10px', border: '1px solid #ddd', borderRadius: 8, fontFamily: 'Georgia,serif', fontSize: 13, marginBottom: 12, boxSizing: 'border-box' }}
-            />
+            <input value={sellBuyer} onChange={function(e) { setSellBuyer(e.target.value); }} placeholder="e.g. Johnson 0421 234 567" style={{ width: '100%', padding: '10px', border: '1px solid #ddd', borderRadius: 8, fontFamily: 'Georgia,serif', fontSize: 13, marginBottom: 12, boxSizing: 'border-box' }} />
             <div style={{ fontSize: 12, color: '#555', marginBottom: 4 }}>Actual sale price per head:</div>
             <div style={{ fontSize: 11, color: '#aaa', marginBottom: 6 }}>{'Listed at ' + (sellModal.pricePerHead ? '$' + sellModal.pricePerHead + '/hd' : 'no price') + ' — what did it actually sell for?'}</div>
-            <input
-              value={sellPrice}
-              onChange={function(e) { setSellPrice(e.target.value); }}
-              type="number"
-              placeholder={sellModal.pricePerHead ? String(sellModal.pricePerHead) : 'e.g. 950'}
-              style={{ width: '100%', padding: '10px', border: '2px solid #2d6a4f', borderRadius: 8, fontFamily: 'Georgia,serif', fontSize: 13, marginBottom: 20, boxSizing: 'border-box' }}
-            />
+            <input value={sellPrice} onChange={function(e) { setSellPrice(e.target.value); }} type="number" placeholder={sellModal.pricePerHead ? String(sellModal.pricePerHead) : 'e.g. 950'} style={{ width: '100%', padding: '10px', border: '2px solid #2d6a4f', borderRadius: 8, fontFamily: 'Georgia,serif', fontSize: 13, marginBottom: 20, boxSizing: 'border-box' }} />
             <div style={{ display: 'flex', gap: 10 }}>
               <button onClick={function() { setSellModal(null); setSellQty(''); setSellBuyer(''); setSellPrice(''); }} style={{ flex: 1, padding: '10px', border: '1px solid #ddd', borderRadius: 8, background: '#fff', cursor: 'pointer', fontFamily: 'Georgia,serif' }}>Cancel</button>
               <button onClick={saveSell} style={{ flex: 1, padding: '10px', border: 'none', borderRadius: 8, background: '#2d4a2d', color: '#fff', cursor: 'pointer', fontFamily: 'Georgia,serif', fontWeight: 'bold' }}>Mark Sold</button>
@@ -660,39 +561,28 @@ export default function App() {
         </div>
       )}
 
-      <div style={{ background: '#1a2e1a', color: '#e8dcc8', padding: '14px 18px', display: 'flex', alignItems: 'center', gap: 12 }}>
-        <div style={{ fontSize: 24 }}>🐄</div>
-        <div>
+      <div style={{ position: 'relative', background: '#1a2e1a', color: '#e8dcc8', padding: '14px 18px', display: 'flex', alignItems: 'center', gap: 12, overflow: 'hidden' }}>
+        <div style={{ position: 'absolute', inset: 0, backgroundImage: 'url(' + FARM_PHOTO_URL + ')', backgroundSize: 'cover', backgroundPosition: 'center', opacity: 0.3 }} />
+        <div style={{ position: 'absolute', inset: 0, background: 'rgba(10,30,10,0.55)' }} />
+        <div style={{ position: 'relative', zIndex: 1, width: 44, height: 44, borderRadius: '50%', border: '2px solid rgba(255,255,255,0.3)', background: 'rgba(255,255,255,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', flexShrink: 0 }}>
+          <img src={LOGO_URL} alt="logo" style={{ width: 36, height: 36, objectFit: 'contain', filter: 'brightness(10)' }} onError={function(e) { e.target.outerHTML = '<span style="font-size:22px">🐄</span>'; }} />
+        </div>
+        <div style={{ position: 'relative', zIndex: 1 }}>
           <div style={{ fontSize: 17, fontWeight: 'bold', letterSpacing: 1 }}>STOCKBOSSNZ</div>
           <div style={{ fontSize: 9, color: '#a0b89a', letterSpacing: 2 }}>SMART LIVESTOCK MATCHING</div>
         </div>
-        <div style={{ marginLeft: 'auto', fontSize: 11, color: '#a0b89a', textAlign: 'right' }}>
+        <div style={{ position: 'relative', zIndex: 1, marginLeft: 'auto', fontSize: 11, color: '#a0b89a', textAlign: 'right' }}>
           <div>{available.length + ' lots available'}</div>
           <div>{activeBuyers.length + ' buyers looking'}</div>
           {allMatches.length > 0 && <div style={{ color: '#f0d060' }}>{allMatches.length + ' matches!'}</div>}
         </div>
-        <button onClick={exportData} style={{ marginLeft: 8, background: 'none', border: '1px solid #a0b89a', color: '#a0b89a', borderRadius: 6, padding: '5px 10px', fontSize: 11, cursor: 'pointer', fontFamily: 'Georgia,serif' }}>Export</button>
-        <button onClick={handleSignOut} style={{ background: 'none', border: '1px solid #a0b89a', color: '#a0b89a', borderRadius: 6, padding: '5px 10px', fontSize: 11, cursor: 'pointer', fontFamily: 'Georgia,serif' }}>Log Out</button>
+        <button onClick={exportData} style={{ position: 'relative', zIndex: 1, marginLeft: 8, background: 'none', border: '1px solid #a0b89a', color: '#a0b89a', borderRadius: 6, padding: '5px 10px', fontSize: 11, cursor: 'pointer', fontFamily: 'Georgia,serif' }}>Export</button>
+        <button onClick={handleSignOut} style={{ position: 'relative', zIndex: 1, background: 'none', border: '1px solid #a0b89a', color: '#a0b89a', borderRadius: 6, padding: '5px 10px', fontSize: 11, cursor: 'pointer', fontFamily: 'Georgia,serif' }}>Log Out</button>
       </div>
 
       <div style={{ display: 'flex', background: '#2d4a2d', alignItems: 'center', overflowX: 'auto', position: 'sticky', top: 0, zIndex: 100 }}>
-        {[
-          { k: 'chat', label: 'Chat' },
-          { k: 'stock', label: 'Sellers (' + available.length + ')' },
-          { k: 'buyers', label: 'Buyers (' + activeBuyers.length + ')' },
-          { k: 'matches', label: 'Matches (' + allMatches.length + ')' },
-          { k: 'matched', label: 'In Talks (' + matched.length + ')' },
-          { k: 'sold', label: 'Sold (' + sold.length + ')' }
-        ].map(function(t) {
-          return (
-            <button key={t.k} onClick={function() { setTab(t.k); }} style={{
-              background: tab === t.k ? '#f5f0e8' : 'transparent',
-              color: tab === t.k ? '#1a2e1a' : '#c8d8c0',
-              border: 'none', padding: '10px 14px', cursor: 'pointer',
-              fontFamily: 'Georgia,serif', fontSize: 12, whiteSpace: 'nowrap',
-              fontWeight: tab === t.k ? 'bold' : 'normal'
-            }}>{t.label}</button>
-          );
+        {tabs.map(function(t) {
+          return <button key={t.k} onClick={function() { setTab(t.k); }} style={{ background: tab === t.k ? '#f5f0e8' : 'transparent', color: tab === t.k ? '#1a2e1a' : '#c8d8c0', border: 'none', padding: '10px 14px', cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 12, whiteSpace: 'nowrap', fontWeight: tab === t.k ? 'bold' : 'normal' }}>{t.label}</button>;
         })}
       </div>
 
@@ -705,14 +595,7 @@ export default function App() {
                 var isUser = m.from === 'user';
                 return (
                   <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: isUser ? 'flex-end' : 'flex-start' }}>
-                    <div style={{
-                      maxWidth: '82%', background: isUser ? '#2d4a2d' : '#ffffff',
-                      color: isUser ? '#e8dcc8' : '#222',
-                      borderRadius: isUser ? '14px 14px 4px 14px' : '14px 14px 14px 4px',
-                      padding: '10px 14px', fontSize: 14, lineHeight: 1.5,
-                      border: isUser ? 'none' : '1px solid #ddd',
-                      boxShadow: '0 1px 3px rgba(0,0,0,0.07)'
-                    }}>
+                    <div style={{ maxWidth: '82%', background: isUser ? '#2d4a2d' : '#ffffff', color: isUser ? '#e8dcc8' : '#222', borderRadius: isUser ? '14px 14px 4px 14px' : '14px 14px 14px 4px', padding: '10px 14px', fontSize: 14, lineHeight: 1.5, border: isUser ? 'none' : '1px solid #ddd', boxShadow: '0 1px 3px rgba(0,0,0,0.07)' }}>
                       {!isUser && <div style={{ fontSize: 9, color: '#aaa', marginBottom: 3, letterSpacing: 1 }}>STOCKBOSSNZ AI</div>}
                       {m.text}
                     </div>
@@ -720,18 +603,9 @@ export default function App() {
                       <div style={{ maxWidth: '82%', marginTop: 6, background: '#1a2e1a', color: '#e8dcc8', borderRadius: 10, padding: '12px 16px', fontSize: 13 }}>
                         <div style={{ fontWeight: 'bold', marginBottom: 6, color: '#f0d060', fontSize: 11 }}>PRICE ESTIMATE</div>
                         <div style={{ display: 'flex', gap: 20, marginBottom: 8 }}>
-                          <div style={{ textAlign: 'center' }}>
-                            <div style={{ fontSize: 10, color: '#a0b89a' }}>LOW</div>
-                            <div style={{ fontSize: 22, fontWeight: 'bold', color: '#74c69d' }}>{'$' + m.extra.low}</div>
-                          </div>
-                          <div style={{ textAlign: 'center' }}>
-                            <div style={{ fontSize: 10, color: '#a0b89a' }}>MID</div>
-                            <div style={{ fontSize: 22, fontWeight: 'bold', color: '#f0d060' }}>{'$' + m.extra.mid}</div>
-                          </div>
-                          <div style={{ textAlign: 'center' }}>
-                            <div style={{ fontSize: 10, color: '#a0b89a' }}>HIGH</div>
-                            <div style={{ fontSize: 22, fontWeight: 'bold', color: '#e8dcc8' }}>{'$' + m.extra.high}</div>
-                          </div>
+                          <div style={{ textAlign: 'center' }}><div style={{ fontSize: 10, color: '#a0b89a' }}>LOW</div><div style={{ fontSize: 22, fontWeight: 'bold', color: '#74c69d' }}>{'$' + m.extra.low}</div></div>
+                          <div style={{ textAlign: 'center' }}><div style={{ fontSize: 10, color: '#a0b89a' }}>MID</div><div style={{ fontSize: 22, fontWeight: 'bold', color: '#f0d060' }}>{'$' + m.extra.mid}</div></div>
+                          <div style={{ textAlign: 'center' }}><div style={{ fontSize: 10, color: '#a0b89a' }}>HIGH</div><div style={{ fontSize: 22, fontWeight: 'bold', color: '#e8dcc8' }}>{'$' + m.extra.high}</div></div>
                         </div>
                         <div style={{ fontSize: 11, color: '#a0b89a', lineHeight: 1.4 }}>{m.extra.reasoning}</div>
                       </div>
@@ -739,56 +613,20 @@ export default function App() {
                   </div>
                 );
               })}
-              {busy && (
-                <div style={{ display: 'flex' }}>
-                  <div style={{ background: '#fff', border: '1px solid #ddd', borderRadius: '14px 14px 14px 4px', padding: '10px 14px', color: '#aaa', fontSize: 13 }}>
-                    Thinking...
-                  </div>
-                </div>
-              )}
+              {busy && <div style={{ display: 'flex' }}><div style={{ background: '#fff', border: '1px solid #ddd', borderRadius: '14px 14px 14px 4px', padding: '10px 14px', color: '#aaa', fontSize: 13 }}>Thinking...</div></div>}
               <div ref={bottom} />
             </div>
-
-            {err && (
-              <div style={{ margin: '0 18px 8px', padding: '9px 13px', background: '#fff0f0', border: '1px solid #ffcccc', borderRadius: 7, fontSize: 12, color: '#c00' }}>
-                {'Error: ' + err}
-              </div>
-            )}
-
+            {err && <div style={{ margin: '0 18px 8px', padding: '9px 13px', background: '#fff0f0', border: '1px solid #ffcccc', borderRadius: 7, fontSize: 12, color: '#c00' }}>{'Error: ' + err}</div>}
             <div style={{ padding: '0 18px 8px', display: 'flex', gap: 7, flexWrap: 'wrap' }}>
-              {[
-                "Pete has 80 Angus R2 steers 420kg Hawkes Bay $1100/hd",
-                "Johnson looking for 60 R2 steers around 400kg up to $1100",
-                "What would Angus R2 steers 420kg be worth?"
-              ].map(function(q) {
-                return (
-                  <button key={q} onClick={function() { send(q); }} style={{
-                    background: 'none', border: '1px solid #2d4a2d', color: '#2d4a2d',
-                    borderRadius: 20, padding: '4px 11px', fontSize: 11, cursor: 'pointer', fontFamily: 'Georgia,serif'
-                  }}>{q}</button>
-                );
+              {['Pete has 80 Angus R2 steers 420kg Hawkes Bay $1100/hd', 'Johnson looking for 60 R2 steers around 400kg up to $1100', 'What would Angus R2 steers 420kg be worth?'].map(function(q) {
+                return <button key={q} onClick={function() { send(q); }} style={{ background: 'none', border: '1px solid #2d4a2d', color: '#2d4a2d', borderRadius: 20, padding: '4px 11px', fontSize: 11, cursor: 'pointer', fontFamily: 'Georgia,serif' }}>{q}</button>;
               })}
-              <button onClick={function() { fileRef.current && fileRef.current.click(); }} style={{
-                background: 'none', border: '1px solid #6d4c41', color: '#6d4c41',
-                borderRadius: 20, padding: '4px 11px', fontSize: 11, cursor: 'pointer', fontFamily: 'Georgia,serif'
-              }}>Upload photo</button>
+              <button onClick={function() { fileRef.current && fileRef.current.click(); }} style={{ background: 'none', border: '1px solid #6d4c41', color: '#6d4c41', borderRadius: 20, padding: '4px 11px', fontSize: 11, cursor: 'pointer', fontFamily: 'Georgia,serif' }}>Upload photo</button>
               <input ref={fileRef} type="file" accept="image/*" onChange={handlePhoto} style={{ display: 'none' }} />
             </div>
-
             <div style={{ padding: '8px 18px 18px', display: 'flex', gap: 8 }}>
-              <input
-                value={input}
-                onChange={function(e) { setInput(e.target.value); }}
-                onKeyDown={function(e) { if (e.key === 'Enter') send(); }}
-                placeholder="Add stock or buyer — include name, age, sex and weight for best matches..."
-                style={{ flex: 1, padding: '11px 14px', borderRadius: 9, border: '2px solid #2d4a2d', fontFamily: 'Georgia,serif', fontSize: 14, background: '#fff', outline: 'none', color: '#111' }}
-              />
-              <button onClick={function() { send(); }} disabled={busy || !input.trim()} style={{
-                background: (busy || !input.trim()) ? '#999' : '#2d4a2d',
-                color: '#e8dcc8', border: 'none', borderRadius: 9,
-                padding: '11px 18px', cursor: (busy || !input.trim()) ? 'not-allowed' : 'pointer',
-                fontFamily: 'Georgia,serif', fontSize: 14, fontWeight: 'bold'
-              }}>Send</button>
+              <input value={input} onChange={function(e) { setInput(e.target.value); }} onKeyDown={function(e) { if (e.key === 'Enter') send(); }} placeholder="Add stock or buyer — include name, age, sex and weight..." style={{ flex: 1, padding: '11px 14px', borderRadius: 9, border: '2px solid #2d4a2d', fontFamily: 'Georgia,serif', fontSize: 14, background: '#fff', outline: 'none', color: '#111' }} />
+              <button onClick={function() { send(); }} disabled={busy || !input.trim()} style={{ background: (busy || !input.trim()) ? '#999' : '#2d4a2d', color: '#e8dcc8', border: 'none', borderRadius: 9, padding: '11px 18px', cursor: (busy || !input.trim()) ? 'not-allowed' : 'pointer', fontFamily: 'Georgia,serif', fontSize: 14, fontWeight: 'bold' }}>Send</button>
             </div>
           </div>
         )}
@@ -797,17 +635,7 @@ export default function App() {
           <div style={{ flex: 1, overflowY: 'auto', padding: 14 }}>
             {tab === 'stock' && categories.length > 1 && (
               <div style={{ display: 'flex', gap: 7, marginBottom: 12, flexWrap: 'wrap' }}>
-                {categories.map(function(c) {
-                  return (
-                    <button key={c} onClick={function() { setFilterCat(c); }} style={{
-                      background: filterCat === c ? (CAT_COLORS[c] || '#2d4a2d') : 'none',
-                      color: filterCat === c ? '#fff' : '#555',
-                      border: '1px solid ' + (CAT_COLORS[c] || '#2d4a2d'),
-                      borderRadius: 20, padding: '4px 12px', fontSize: 12,
-                      cursor: 'pointer', fontFamily: 'Georgia,serif', textTransform: 'capitalize'
-                    }}>{c}</button>
-                  );
-                })}
+                {categories.map(function(c) { return <button key={c} onClick={function() { setFilterCat(c); }} style={{ background: filterCat === c ? (CAT_COLORS[c] || '#2d4a2d') : 'none', color: filterCat === c ? '#fff' : '#555', border: '1px solid ' + (CAT_COLORS[c] || '#2d4a2d'), borderRadius: 20, padding: '4px 12px', fontSize: 12, cursor: 'pointer', fontFamily: 'Georgia,serif', textTransform: 'capitalize' }}>{c}</button>; })}
               </div>
             )}
             {shownStock.length === 0 ? (
@@ -821,72 +649,45 @@ export default function App() {
                   var cc = CAT_COLORS[l.category] || '#78909c';
                   var rem = l.quantity - (l.quantitySold || 0);
                   return (
-                    <div key={l.id} style={{
-                      background: '#fff', borderRadius: 9, padding: '13px 16px',
-                      border: '1px solid #ddd', boxShadow: '0 1px 5px rgba(0,0,0,0.05)',
-                      display: 'flex', alignItems: 'flex-start', gap: 12,
-                      opacity: l.status === 'sold' ? 0.65 : 1,
-                      borderLeft: '5px solid ' + cc
-                    }}>
-                      {l.photoUrl && <img src={l.photoUrl} alt="stock" style={{ width: 60, height: 60, objectFit: 'cover', borderRadius: 7, flexShrink: 0 }} />}
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 4, flexWrap: 'wrap' }}>
-                          <span style={{ fontSize: 15, fontWeight: 'bold', color: '#1a2e1a' }}>{l.seller}</span>
-                          {l.sellerPhone && <span style={{ fontSize: 11, color: '#888' }}>{l.sellerPhone}</span>}
-                          <span style={{ background: cc, color: '#fff', borderRadius: 4, padding: '1px 6px', fontSize: 10, textTransform: 'uppercase' }}>{l.category}</span>
-                        </div>
-                        <div style={{ fontSize: 14, color: '#333', marginBottom: 3 }}>
-                          <strong>{l.breed}</strong>
-                          {l.age ? (' - ' + l.age) : ''}
-                          {l.weightKg ? (' - ' + l.weightKg + 'kg') : ''}
-                          {l.condition ? (' - ' + l.condition) : ''}
-                        </div>
-                        {(l.location || l.nature || l.trucking) && (
-                          <div style={{ fontSize: 12, color: '#888', marginBottom: 2 }}>
-                            {[l.location, l.nature, l.trucking].filter(Boolean).join(' · ')}
+                    <div key={l.id} style={{ background: '#fff', borderRadius: 10, border: '1px solid #ddd', boxShadow: '0 1px 5px rgba(0,0,0,0.05)', overflow: 'hidden', opacity: l.status === 'sold' ? 0.65 : 1, borderLeft: '5px solid ' + cc }}>
+                      <div style={{ padding: '13px 16px', display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+                        {l.photoUrl && <img src={l.photoUrl} alt="stock" style={{ width: 60, height: 60, objectFit: 'cover', borderRadius: 7, flexShrink: 0 }} />}
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 4, flexWrap: 'wrap' }}>
+                            <span style={{ fontSize: 15, fontWeight: 'bold', color: '#1a2e1a' }}>{l.seller}</span>
+                            {l.sellerPhone && <span style={{ fontSize: 11, color: '#888' }}>{l.sellerPhone}</span>}
+                            <span style={{ background: cc, color: '#fff', borderRadius: 4, padding: '1px 6px', fontSize: 10, textTransform: 'uppercase' }}>{l.category}</span>
                           </div>
-                        )}
-                        <div style={{ fontSize: 12, color: '#888' }}>
-                          {l.pricePerHead ? (
-                            <span style={{ color: '#2d6a4f', fontWeight: 'bold' }}>
-                              {'$' + l.pricePerHead + '/hd'}
-                              {l.centsPerKg ? (' (' + l.centsPerKg + 'c/kg)') : ''}
-                            </span>
-                          ) : <span style={{ color: '#bbb' }}>Price TBC</span>}
-                          {l.notes ? ('  |  ' + l.notes) : ''}
-                        </div>
-                        {l.buyer && <div style={{ fontSize: 12, color: '#6d4c41', marginTop: 3 }}>{'Buyer: ' + l.buyer + (l.buyerPhone ? ' - ' + l.buyerPhone : '')}</div>}
-                        {l.actualSalePrice && (
-                          <div style={{ fontSize: 12, marginTop: 3 }}>
-                            <span style={{ color: '#aaa' }}>{'Listed: $' + (l.pricePerHead || 'TBC') + ' -> '}</span>
-                            <span style={{ color: '#2d6a4f', fontWeight: 'bold' }}>{'Sold: $' + l.actualSalePrice + '/hd'}</span>
+                          <div style={{ fontSize: 14, color: '#333', marginBottom: 3 }}><strong>{l.breed}</strong>{l.age ? (' - ' + l.age) : ''}{l.weightKg ? (' - ' + l.weightKg + 'kg') : ''}{l.condition ? (' - ' + l.condition) : ''}</div>
+                          {(l.location || l.nature || l.trucking) && <div style={{ fontSize: 12, color: '#888', marginBottom: 2 }}>{[l.location, l.nature, l.trucking].filter(Boolean).join(' · ')}</div>}
+                          <div style={{ fontSize: 12, color: '#888' }}>
+                            {l.pricePerHead ? <span style={{ color: '#2d6a4f', fontWeight: 'bold' }}>{'$' + l.pricePerHead + '/hd'}{l.centsPerKg ? (' (' + l.centsPerKg + 'c/kg)') : ''}</span> : <span style={{ color: '#bbb' }}>Price TBC</span>}
+                            {l.notes ? ('  |  ' + l.notes) : ''}
                           </div>
-                        )}
-                        {l.dateSold && <div style={{ fontSize: 11, color: '#bbb', marginTop: 2 }}>{'Sold ' + new Date(l.dateSold).toLocaleDateString('en-NZ', { day: 'numeric', month: 'short', year: 'numeric' })}</div>}
+                          {l.buyer && <div style={{ fontSize: 12, color: '#6d4c41', marginTop: 3 }}>{'Buyer: ' + l.buyer + (l.buyerPhone ? ' - ' + l.buyerPhone : '')}</div>}
+                          {l.actualSalePrice && <div style={{ fontSize: 12, marginTop: 3 }}><span style={{ color: '#aaa' }}>{'Listed: $' + (l.pricePerHead || 'TBC') + ' -> '}</span><span style={{ color: '#2d6a4f', fontWeight: 'bold' }}>{'Sold: $' + l.actualSalePrice + '/hd'}</span></div>}
+                          {l.dateSold && <div style={{ fontSize: 11, color: '#bbb', marginTop: 2 }}>{'Sold ' + new Date(l.dateSold).toLocaleDateString('en-NZ', { day: 'numeric', month: 'short', year: 'numeric' })}</div>}
+                        </div>
+                        <div style={{ textAlign: 'center', minWidth: 56, flexShrink: 0 }}>
+                          <div style={{ fontSize: 22, fontWeight: 'bold', color: '#1a2e1a', lineHeight: 1 }}>{rem}</div>
+                          <div style={{ fontSize: 10, color: '#bbb' }}>{'of ' + l.quantity}</div>
+                          {l.quantitySold > 0 && <div style={{ fontSize: 10, color: '#e67e22' }}>{l.quantitySold + ' sold'}</div>}
+                          <div style={{ background: badge.color, color: '#fff', borderRadius: 5, padding: '3px 6px', fontSize: 9, fontWeight: 'bold', marginTop: 4 }}>{badge.label}</div>
+                        </div>
                       </div>
-                      <div style={{ textAlign: 'center', minWidth: 64, flexShrink: 0 }}>
-                        <div style={{ fontSize: 22, fontWeight: 'bold', color: '#1a2e1a', lineHeight: 1 }}>{rem}</div>
-                        <div style={{ fontSize: 10, color: '#bbb' }}>{'of ' + l.quantity}</div>
-                        {l.quantitySold > 0 && <div style={{ fontSize: 10, color: '#e67e22' }}>{l.quantitySold + ' sold'}</div>}
-                        <div style={{ background: badge.color, color: '#fff', borderRadius: 5, padding: '3px 6px', fontSize: 9, fontWeight: 'bold', marginTop: 4 }}>{badge.label}</div>
-                        {(tab === 'stock' || tab === 'matched') && (
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginTop: 6 }}>
-                            {tab === 'stock' && (
-                              <button onClick={function() { markMatched(l); }} style={{ background: '#8e44ad', border: 'none', color: '#fff', borderRadius: 5, padding: '3px 6px', fontSize: 9, cursor: 'pointer', fontWeight: 'bold' }}>IN TALKS</button>
-                            )}
-                            {tab === 'matched' && (
-                              <button onClick={function() { reList(l); }} style={{ background: '#2980b9', border: 'none', color: '#fff', borderRadius: 5, padding: '3px 6px', fontSize: 9, cursor: 'pointer', fontWeight: 'bold' }}>RE-LIST</button>
-                            )}
-                            <button onClick={function() { setSellModal(l); }} style={{ background: '#2d6a4f', border: 'none', color: '#fff', borderRadius: 5, padding: '3px 6px', fontSize: 9, cursor: 'pointer', fontWeight: 'bold' }}>SOLD</button>
-                            <button onClick={function() { setConfirmDelete(l.id); }} style={{ background: 'none', border: '1px solid #c0392b', color: '#c0392b', borderRadius: 5, padding: '2px 6px', fontSize: 9, cursor: 'pointer' }}>DELETE</button>
-                          </div>
-                        )}
-                        {tab === 'sold' && (
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginTop: 6 }}>
-                            <button onClick={function() { setConfirmDelete(l.id); }} style={{ background: 'none', border: '1px solid #c0392b', color: '#c0392b', borderRadius: 5, padding: '2px 6px', fontSize: 9, cursor: 'pointer' }}>DELETE</button>
-                          </div>
-                        )}
-                      </div>
+                      {(tab === 'stock' || tab === 'matched') && (
+                        <div style={{ display: 'flex', gap: 8, padding: '10px 14px', borderTop: '1px solid #f0ede8', background: '#faf8f4' }}>
+                          {tab === 'stock' && <button onClick={function() { markMatched(l); }} style={{ flex: 1, padding: '10px 6px', background: '#8e44ad', border: 'none', color: '#fff', borderRadius: 7, cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 12, fontWeight: 'bold' }}>IN TALKS</button>}
+                          {tab === 'matched' && <button onClick={function() { reList(l); }} style={{ flex: 1, padding: '10px 6px', background: '#2980b9', border: 'none', color: '#fff', borderRadius: 7, cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 12, fontWeight: 'bold' }}>RE-LIST</button>}
+                          <button onClick={function() { setSellModal(l); }} style={{ flex: 1, padding: '10px 6px', background: '#2d6a4f', border: 'none', color: '#fff', borderRadius: 7, cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 12, fontWeight: 'bold' }}>MARK SOLD</button>
+                          <button onClick={function() { setConfirmDelete(l.id); }} style={{ flex: 1, padding: '10px 6px', background: 'none', border: '1px solid #c0392b', color: '#c0392b', borderRadius: 7, cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 12 }}>DELETE</button>
+                        </div>
+                      )}
+                      {tab === 'sold' && (
+                        <div style={{ display: 'flex', padding: '10px 14px', borderTop: '1px solid #f0ede8', background: '#faf8f4' }}>
+                          <button onClick={function() { setConfirmDelete(l.id); }} style={{ padding: '10px 20px', background: 'none', border: '1px solid #c0392b', color: '#c0392b', borderRadius: 7, cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 12 }}>DELETE</button>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -898,44 +699,29 @@ export default function App() {
         {tab === 'buyers' && (
           <div style={{ flex: 1, overflowY: 'auto', padding: 14 }}>
             {activeBuyers.length === 0 ? (
-              <div style={{ textAlign: 'center', color: '#aaa', marginTop: 60, fontSize: 14 }}>
-                No buyers yet. Use Chat to add one — e.g. "Johnson looking for 60 Angus R2 steers around 400kg up to $900"
-              </div>
+              <div style={{ textAlign: 'center', color: '#aaa', marginTop: 60, fontSize: 14 }}>No buyers yet. Use Chat to add one.</div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 {activeBuyers.map(function(b) {
                   var cc = CAT_COLORS[b.category] || '#78909c';
                   var buyerMatches = allMatches.filter(function(m) { return m.buyerId === b.id; });
                   return (
-                    <div key={b.id} style={{
-                      background: '#fff', borderRadius: 9, padding: '13px 16px',
-                      border: '1px solid #ddd', boxShadow: '0 1px 5px rgba(0,0,0,0.05)',
-                      display: 'flex', alignItems: 'flex-start', gap: 12,
-                      borderLeft: '5px solid ' + (buyerMatches.length > 0 ? '#f0d060' : cc)
-                    }}>
-                      <div style={{ flex: 1 }}>
+                    <div key={b.id} style={{ background: '#fff', borderRadius: 10, border: '1px solid #ddd', boxShadow: '0 1px 5px rgba(0,0,0,0.05)', overflow: 'hidden', borderLeft: '5px solid ' + (buyerMatches.length > 0 ? '#f0d060' : cc) }}>
+                      <div style={{ padding: '13px 16px' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 4, flexWrap: 'wrap' }}>
                           <span style={{ fontSize: 15, fontWeight: 'bold', color: '#1a2e1a' }}>{b.name}</span>
                           {b.phone && <span style={{ fontSize: 11, color: '#888' }}>{b.phone}</span>}
                           {b.category && <span style={{ background: cc, color: '#fff', borderRadius: 4, padding: '1px 6px', fontSize: 10, textTransform: 'uppercase' }}>{b.category}</span>}
                           {buyerMatches.length > 0 && <span style={{ background: '#f0d060', color: '#1a2e1a', borderRadius: 4, padding: '1px 6px', fontSize: 10, fontWeight: 'bold' }}>{buyerMatches.length + ' MATCH' + (buyerMatches.length > 1 ? 'ES' : '')}</span>}
                         </div>
-                        <div style={{ fontSize: 14, color: '#333', marginBottom: 3 }}>
-                          {'Looking for: '}
-                          <strong>{b.breed || 'Any breed'}</strong>
-                          {b.age ? (' - ' + b.age) : ''}
-                          {b.quantity ? (' - ' + b.quantity + ' head') : ''}
-                          {b.weightKg ? (' - ' + b.weightKg + 'kg') : ''}
-                        </div>
+                        <div style={{ fontSize: 14, color: '#333', marginBottom: 3 }}>{'Looking for: '}<strong>{b.breed || 'Any breed'}</strong>{b.age ? (' - ' + b.age) : ''}{b.quantity ? (' - ' + b.quantity + ' head') : ''}{b.weightKg ? (' - ' + b.weightKg + 'kg') : ''}</div>
                         {b.maxPricePerHead && <div style={{ fontSize: 12, color: '#2d6a4f', fontWeight: 'bold' }}>{'Up to $' + b.maxPricePerHead + '/hd'}</div>}
                         {b.notes && <div style={{ fontSize: 12, color: '#888' }}>{b.notes}</div>}
                         <div style={{ fontSize: 11, color: '#bbb', marginTop: 2 }}>{'Added ' + new Date(b.dateAdded).toLocaleDateString('en-NZ', { day: 'numeric', month: 'short' })}</div>
                       </div>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0 }}>
-                        {buyerMatches.length > 0 && (
-                          <button onClick={function() { setTab('matches'); }} style={{ background: '#f0d060', border: 'none', color: '#1a2e1a', borderRadius: 5, padding: '4px 8px', fontSize: 10, cursor: 'pointer', fontWeight: 'bold' }}>VIEW MATCHES</button>
-                        )}
-                        <button onClick={function() { setConfirmDeleteBuyer(b.id); }} style={{ background: 'none', border: '1px solid #c0392b', color: '#c0392b', borderRadius: 5, padding: '3px 8px', fontSize: 10, cursor: 'pointer' }}>DELETE</button>
+                      <div style={{ display: 'flex', gap: 8, padding: '10px 14px', borderTop: '1px solid #f0ede8', background: '#faf8f4' }}>
+                        {buyerMatches.length > 0 && <button onClick={function() { setTab('matches'); }} style={{ flex: 1, padding: '10px 6px', background: '#f0d060', border: 'none', color: '#1a2e1a', borderRadius: 7, cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 12, fontWeight: 'bold' }}>VIEW MATCHES</button>}
+                        <button onClick={function() { setConfirmDeleteBuyer(b.id); }} style={{ flex: 1, padding: '10px 6px', background: 'none', border: '1px solid #c0392b', color: '#c0392b', borderRadius: 7, cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 12 }}>DELETE</button>
                       </div>
                     </div>
                   );
@@ -948,25 +734,18 @@ export default function App() {
         {tab === 'matches' && (
           <div style={{ flex: 1, overflowY: 'auto', padding: 14 }}>
             {allMatches.length === 0 ? (
-              <div style={{ textAlign: 'center', color: '#aaa', marginTop: 60, fontSize: 14 }}>
-                No quality matches yet. Make sure listings include name, age, sex and weight for accurate matching.
-              </div>
+              <div style={{ textAlign: 'center', color: '#aaa', marginTop: 60, fontSize: 14 }}>No quality matches yet. Make sure listings include name, age, sex and weight.</div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 {allMatches.map(function(m, i) {
                   return (
-                    <div key={i} style={{ background: '#fff', borderRadius: 9, border: '2px solid #f0d060', boxShadow: '0 2px 8px rgba(240,208,96,0.2)', overflow: 'hidden' }}>
-                      <div style={{ background: '#f0d060', padding: '8px 16px', fontSize: 12, fontWeight: 'bold', color: '#1a2e1a' }}>
-                        {'POTENTIAL MATCH — Score: ' + m.score + '/8'}
-                      </div>
+                    <div key={i} style={{ background: '#fff', borderRadius: 10, border: '2px solid #f0d060', boxShadow: '0 2px 8px rgba(240,208,96,0.2)', overflow: 'hidden' }}>
+                      <div style={{ background: '#f0d060', padding: '8px 16px', fontSize: 12, fontWeight: 'bold', color: '#1a2e1a' }}>{'POTENTIAL MATCH — Score: ' + m.score + '/8'}</div>
                       <div style={{ display: 'flex' }}>
                         <div style={{ flex: 1, padding: '12px 16px', borderRight: '1px solid #f0ede8' }}>
                           <div style={{ fontSize: 10, color: '#aaa', marginBottom: 4, letterSpacing: 1 }}>SELLER</div>
                           <div style={{ fontSize: 14, fontWeight: 'bold', color: '#1a2e1a' }}>{m.listing.seller}</div>
-                          <div style={{ fontSize: 13, color: '#333' }}>
-                            <strong>{m.listing.breed}</strong>
-                            {m.listing.age ? ' ' + m.listing.age : ''}
-                          </div>
+                          <div style={{ fontSize: 13, color: '#333' }}><strong>{m.listing.breed}</strong>{m.listing.age ? ' ' + m.listing.age : ''}</div>
                           <div style={{ fontSize: 12, color: '#888' }}>{m.listing.quantity + ' head'}</div>
                           {m.listing.weightKg && <div style={{ fontSize: 12, color: '#888' }}>{m.listing.weightKg + 'kg'}</div>}
                           {m.listing.pricePerHead && <div style={{ fontSize: 12, color: '#2d6a4f', fontWeight: 'bold' }}>{'$' + m.listing.pricePerHead + '/hd'}</div>}
@@ -982,9 +761,9 @@ export default function App() {
                         </div>
                       </div>
                       <div style={{ padding: '10px 16px', borderTop: '1px solid #f0ede8', display: 'flex', gap: 8 }}>
-                        <button onClick={function() { markMatched(m.listing); }} style={{ flex: 1, padding: '8px', background: '#8e44ad', border: 'none', color: '#fff', borderRadius: 7, cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 12, fontWeight: 'bold' }}>IN TALKS</button>
-                        <button onClick={function() { setSellModal(m.listing); }} style={{ flex: 1, padding: '8px', background: '#2d6a4f', border: 'none', color: '#fff', borderRadius: 7, cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 12, fontWeight: 'bold' }}>MARK SOLD</button>
-                        <button onClick={function() { setDismissedMatches(dismissedMatches.concat([{ buyerId: m.buyer.id, listingId: m.listing.id }])); }} style={{ flex: 1, padding: '8px', background: 'none', border: '1px solid #999', color: '#999', borderRadius: 7, cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 12 }}>DISMISS</button>
+                        <button onClick={function() { markMatched(m.listing); }} style={{ flex: 1, padding: '10px 6px', background: '#8e44ad', border: 'none', color: '#fff', borderRadius: 7, cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 12, fontWeight: 'bold' }}>IN TALKS</button>
+                        <button onClick={function() { setSellModal(m.listing); }} style={{ flex: 1, padding: '10px 6px', background: '#2d6a4f', border: 'none', color: '#fff', borderRadius: 7, cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 12, fontWeight: 'bold' }}>MARK SOLD</button>
+                        <button onClick={function() { setDismissedMatches(dismissedMatches.concat([{ buyerId: m.buyer.id, listingId: m.listing.id }])); }} style={{ flex: 1, padding: '10px 6px', background: 'none', border: '1px solid #999', color: '#999', borderRadius: 7, cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 12 }}>DISMISS</button>
                       </div>
                     </div>
                   );
@@ -993,6 +772,8 @@ export default function App() {
             )}
           </div>
         )}
+
+        {tab === 'admin' && isAdmin && <AdminPanel listings={listings} buyers={buyers} onNotification={showNotification} />}
 
       </div>
     </div>
