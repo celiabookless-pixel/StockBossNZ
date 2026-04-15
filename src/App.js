@@ -1,9 +1,11 @@
 import { useState, useRef, useEffect } from 'react';
-import { getListings, saveAllListings, getMessages, saveMessage, uploadPhoto, deleteListing, getBuyers, saveBuyer, deleteBuyer, signIn, signUp, signOut, getSession, supabase, saveMarketData, clearMarketData, getMarketData } from './supabase';
+import { getListings, saveAllListings, getMessages, saveMessage, uploadPhoto, deleteListing, getBuyers, saveBuyer, deleteBuyer, signIn, signUp, signOut, getSession, supabase, saveMarketData, clearMarketData, getMarketData, getDismissedMatches, saveDismissedMatch, deleteDismissedMatch, cleanupDismissedMatches } from './supabase';
 
 const ADMIN_EMAIL = 'celia.bee@hotmail.com';
 const ADMIN_PASSWORD = 'stockboss2024';
 const FARM_PHOTO_URL = 'https://nnbmafrcosibaubzkkaf.supabase.co/storage/v1/object/public/Assets/farm.jpg';
+
+const PRICE_KEYWORDS = ['worth', 'price', 'estimate', 'value', 'how much', 'what would', 'per head', 'per kg', 'cents', 'dollar'];
 
 const SYSTEM_PROMPT = `You are StockBossNZ, a smart livestock matching AI for stock agents in New Zealand and Australia. Respond ONLY with raw JSON, no markdown, no backticks, no explanation.
 
@@ -96,8 +98,17 @@ function getBadge(status) {
   return { label: 'AVAILABLE', color: '#27ae60' };
 }
 
+function isPriceQuery(msg) {
+  var lower = msg.toLowerCase();
+  return PRICE_KEYWORDS.some(function(k) { return lower.includes(k); });
+}
+
 async function askClaude(userMsg, listings, buyers, history, marketData) {
-  var contextPrefix = 'Date: ' + new Date().toISOString() + '\nStock: ' + JSON.stringify(listings) + '\nBuyers: ' + JSON.stringify(buyers) + '\nMarketData: ' + JSON.stringify(marketData || []) + '\n\n';
+  var contextPrefix = 'Date: ' + new Date().toISOString() + '\nStock: ' + JSON.stringify(listings) + '\nBuyers: ' + JSON.stringify(buyers);
+  if (marketData && marketData.length > 0) {
+    contextPrefix += '\nMarketData: ' + JSON.stringify(marketData);
+  }
+  contextPrefix += '\n\n';
   var messages = [];
   if (history && history.length > 0) {
     var recent = history.slice(-10);
@@ -122,11 +133,13 @@ async function askClaude(userMsg, listings, buyers, history, marketData) {
 
 const MIN_MATCH_SCORE = 5;
 
-function findMatches(listings, buyers) {
+function findMatches(listings, buyers, dismissedMatches) {
   var matches = [];
   buyers.filter(function(b) { return b.status === 'looking'; }).forEach(function(buyer) {
     listings.filter(function(l) { return l.status === 'available' || l.status === 'partial'; }).forEach(function(listing) {
       if (!buyer.category || !listing.category || buyer.category !== listing.category) return;
+      var isDismissed = dismissedMatches.some(function(d) { return d.listing_id === listing.id && d.buyer_id === buyer.id; });
+      if (isDismissed) return;
       var score = 0;
       var isMixedAge = buyer.age && buyer.age.toLowerCase().includes('mixed');
       if (!isMixedAge && buyer.weightKg && listing.weightKg) {
@@ -142,6 +155,41 @@ function findMatches(listings, buyers) {
   });
   matches.sort(function(a, b) { return b.score - a.score; });
   return matches;
+}
+
+function findPotentialMatch(item, type, listings, buyers, dismissedMatches) {
+  if (type === 'listing') {
+    var activeBuyers = buyers.filter(function(b) { return b.status === 'looking'; });
+    for (var i = 0; i < activeBuyers.length; i++) {
+      var buyer = activeBuyers[i];
+      if (!buyer.category || buyer.category !== item.category) continue;
+      var score = 0;
+      var isMixedAge = buyer.age && buyer.age.toLowerCase().includes('mixed');
+      if (!isMixedAge && buyer.weightKg && item.weightKg) {
+        var diff = Math.abs(buyer.weightKg - item.weightKg);
+        if (diff <= 70) score += Math.round(3 * (1 - diff / 70));
+      }
+      if (!isMixedAge && buyer.age && item.age && item.age.toLowerCase().includes(buyer.age.toLowerCase())) score += 3;
+      if (buyer.breed && item.breed && item.breed.toLowerCase().includes(buyer.breed.toLowerCase())) score += 2;
+      if (score >= MIN_MATCH_SCORE) return buyer;
+    }
+  } else {
+    var activeListings = listings.filter(function(l) { return l.status === 'available' || l.status === 'partial'; });
+    for (var j = 0; j < activeListings.length; j++) {
+      var listing = activeListings[j];
+      if (!item.category || listing.category !== item.category) continue;
+      var score2 = 0;
+      var isMixedAge2 = item.age && item.age.toLowerCase().includes('mixed');
+      if (!isMixedAge2 && item.weightKg && listing.weightKg) {
+        var diff2 = Math.abs(item.weightKg - listing.weightKg);
+        if (diff2 <= 70) score2 += Math.round(3 * (1 - diff2 / 70));
+      }
+      if (!isMixedAge2 && item.age && listing.age && listing.age.toLowerCase().includes(item.age.toLowerCase())) score2 += 3;
+      if (item.breed && listing.breed && listing.breed.toLowerCase().includes(item.breed.toLowerCase())) score2 += 2;
+      if (score2 >= MIN_MATCH_SCORE) return listing;
+    }
+  }
+  return null;
 }
 
 function parseCSV(text) {
@@ -325,9 +373,29 @@ function EditBuyerModal({ buyer, onSave, onClose }) {
   );
 }
 
-function InTalksPromptModal({ onConfirm, onClose }) {
+function InTalksPromptModal({ potentialMatch, matchType, onConfirmMatch, onDifferentPerson, onClose }) {
   var [name, setName] = useState('');
   var [phone, setPhone] = useState('');
+  var [step, setStep] = useState(potentialMatch ? 'confirm' : 'manual');
+
+  if (step === 'confirm' && potentialMatch) {
+    var matchName = matchType === 'listing' ? potentialMatch.name : potentialMatch.seller;
+    return (
+      <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+        <div style={{ background: '#fff', borderRadius: 12, padding: 24, maxWidth: 380, width: '100%' }}>
+          <div style={{ fontSize: 16, fontWeight: 'bold', color: '#1a2e1a', marginBottom: 8 }}>Potential Match Found</div>
+          <div style={{ fontSize: 13, color: '#555', marginBottom: 20, lineHeight: 1.6 }}>
+            There is a potential match with <strong>{matchName}</strong> — is this who you are in talks with?
+          </div>
+          <div style={{ display: 'flex', gap: 10 }}>
+            <button onClick={function() { setStep('manual'); }} style={{ flex: 1, padding: '10px', border: '1px solid #ddd', borderRadius: 8, background: '#fff', cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 13 }}>No, different person</button>
+            <button onClick={function() { onConfirmMatch(potentialMatch); }} style={{ flex: 1, padding: '10px', border: 'none', borderRadius: 8, background: '#8e44ad', color: '#fff', cursor: 'pointer', fontFamily: 'Georgia,serif', fontWeight: 'bold' }}>Yes!</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
       <div style={{ background: '#fff', borderRadius: 12, padding: 24, maxWidth: 380, width: '100%' }}>
@@ -336,8 +404,8 @@ function InTalksPromptModal({ onConfirm, onClose }) {
         <input value={name} onChange={function(e) { setName(e.target.value); }} placeholder="Name" style={{ width: '100%', padding: '10px', border: '1px solid #ddd', borderRadius: 8, fontFamily: 'Georgia,serif', fontSize: 13, marginBottom: 10, boxSizing: 'border-box' }} />
         <input value={phone} onChange={function(e) { setPhone(e.target.value); }} placeholder="Phone (optional)" style={{ width: '100%', padding: '10px', border: '1px solid #ddd', borderRadius: 8, fontFamily: 'Georgia,serif', fontSize: 13, marginBottom: 16, boxSizing: 'border-box' }} />
         <div style={{ display: 'flex', gap: 10 }}>
-          <button onClick={function() { onConfirm(null, null); }} style={{ flex: 1, padding: '10px', border: '1px solid #ddd', borderRadius: 8, background: '#fff', cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 13 }}>Skip</button>
-          <button onClick={function() { onConfirm(name || null, phone || null); }} style={{ flex: 1, padding: '10px', border: 'none', borderRadius: 8, background: '#8e44ad', color: '#fff', cursor: 'pointer', fontFamily: 'Georgia,serif', fontWeight: 'bold' }}>Confirm</button>
+          <button onClick={function() { onDifferentPerson(null, null); }} style={{ flex: 1, padding: '10px', border: '1px solid #ddd', borderRadius: 8, background: '#fff', cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 13 }}>Skip</button>
+          <button onClick={function() { onDifferentPerson(name || null, phone || null); }} style={{ flex: 1, padding: '10px', border: 'none', borderRadius: 8, background: '#8e44ad', color: '#fff', cursor: 'pointer', fontFamily: 'Georgia,serif', fontWeight: 'bold' }}>Confirm</button>
         </div>
       </div>
     </div>
@@ -486,6 +554,7 @@ export default function App() {
   var [buyers, setBuyers] = useState([]);
   var [msgs, setMsgs] = useState([]);
   var [marketData, setMarketData] = useState([]);
+  var [dismissedMatches, setDismissedMatches] = useState([]);
   var [input, setInput] = useState('');
   var [busy, setBusy] = useState(false);
   var [tab, setTab] = useState('chat');
@@ -499,7 +568,7 @@ export default function App() {
   var [sellBuyer, setSellBuyer] = useState('');
   var [sellPrice, setSellPrice] = useState('');
   var [filterCat, setFilterCat] = useState('all');
-  var [dismissedMatches, setDismissedMatches] = useState([]);
+  var [filterBuyerCat, setFilterBuyerCat] = useState('all');
   var [editListing, setEditListing] = useState(null);
   var [editBuyer, setEditBuyer] = useState(null);
   var [inTalksPrompt, setInTalksPrompt] = useState(null);
@@ -519,11 +588,11 @@ export default function App() {
     if (!session) return;
     async function load() {
       try {
-        var results = await Promise.all([getListings(), getBuyers(), getMessages(), getMarketData()]);
-        var ls = results[0]; var bs = results[1]; var ms = results[2]; var md = results[3];
+        var results = await Promise.all([getListings(), getBuyers(), getMessages(), getDismissedMatches()]);
+        var ls = results[0]; var bs = results[1]; var ms = results[2]; var dm = results[3];
         var mapped = ls.map(function(l) { return { id: l.id, seller: l.seller, sellerPhone: l.seller_phone, buyer: l.buyer, buyerPhone: l.buyer_phone, breed: l.breed, category: l.category, age: l.age, weightKg: l.weight_kg, condition: l.condition, location: l.location, trucking: l.trucking, nature: l.nature, quantity: l.quantity, quantitySold: l.quantity_sold, pricePerHead: l.price_per_head, centsPerKg: l.cents_per_kg, actualSalePrice: l.actual_sale_price, notes: l.notes, photoUrl: l.photo_url, dateAdded: l.date_added, dateSold: l.date_sold, status: l.status, inTalksWith: l.in_talks_with || null, inTalksPhone: l.in_talks_phone || null }; });
         var mappedBuyers = bs.map(function(b) { return { id: b.id, name: b.name, phone: b.phone, breed: b.breed, category: b.category, age: b.age, quantity: b.quantity, weightKg: b.weight_kg || null, maxPricePerHead: b.max_price_per_head, notes: b.notes, dateAdded: b.date_added, status: b.status, inTalksWith: b.in_talks_with || null, inTalksPhone: b.in_talks_phone || null }; });
-        setListings(mapped); setBuyers(mappedBuyers); setMarketData(md);
+        setListings(mapped); setBuyers(mappedBuyers); setDismissedMatches(dm);
         if (ms.length > 0) { setMsgs(ms); } else {
           setMsgs([{ from: 'ai', text: "G'day! I'm StockBossNZ. To add stock or a buyer I need at least: name, age (e.g. R2, weaner), sex/class (e.g. steers, heifers), and weight. Mixed age mobs don't need a weight. Example: 'Pete has 80 Angus R2 steers 420kg Hawkes Bay $1100/hd'", extra: null }]);
         }
@@ -535,7 +604,7 @@ export default function App() {
 
   useEffect(function() { if (bottom.current) bottom.current.scrollIntoView({ behavior: 'smooth' }); }, [msgs]);
 
-  async function handleSignOut() { await signOut(); setSession(null); setListings([]); setBuyers([]); setMsgs([]); setMarketData([]); }
+  async function handleSignOut() { await signOut(); setSession(null); setListings([]); setBuyers([]); setMsgs([]); setMarketData([]); setDismissedMatches([]); }
   function showNotification(text) { setNotification(text); setTimeout(function() { setNotification(null); }, 4000); }
 
   async function send(overrideInput) {
@@ -546,13 +615,23 @@ export default function App() {
     var newMsgs = msgs.concat([userMsg]);
     setMsgs(newMsgs); await saveMessage(userMsg); setBusy(true);
     try {
-      var result = await askClaude(msg, listings, buyers, msgs, marketData);
+      var mdToSend = [];
+      if (isPriceQuery(msg)) {
+        if (marketData.length === 0) {
+          var freshMd = await getMarketData();
+          setMarketData(freshMd);
+          mdToSend = freshMd;
+        } else {
+          mdToSend = marketData;
+        }
+      }
+      var result = await askClaude(msg, listings, buyers, msgs, mdToSend);
       var updatedListings = listings; var updatedBuyers = buyers;
       if (result.listings) { updatedListings = result.listings; setListings(updatedListings); await saveAllListings(updatedListings); }
       if (result.buyers) { updatedBuyers = result.buyers; setBuyers(updatedBuyers); for (var i = 0; i < updatedBuyers.length; i++) { await saveBuyer(updatedBuyers[i]); } }
       if (result.action === 'add_stock') {
         showNotification('Stock added!'); setTab('stock');
-        var matches = findMatches(updatedListings, updatedBuyers);
+        var matches = findMatches(updatedListings, updatedBuyers, dismissedMatches);
         if (matches.length > 0) {
           var matchMsg = { from: 'ai', text: 'Heads up! Found ' + matches.length + ' potential match' + (matches.length > 1 ? 'es' : '') + ' with buyers. Check the Matches tab!', extra: null };
           newMsgs = newMsgs.concat([{ from: 'ai', text: result.message || 'Done.', extra: result.estimate || null }]);
@@ -561,7 +640,7 @@ export default function App() {
       }
       if (result.action === 'add_buyer') {
         showNotification('Buyer added!'); setTab('buyers');
-        var matches2 = findMatches(updatedListings, updatedBuyers);
+        var matches2 = findMatches(updatedListings, updatedBuyers, dismissedMatches);
         if (matches2.length > 0) {
           var matchMsg2 = { from: 'ai', text: 'Great news! Found ' + matches2.length + ' potential match' + (matches2.length > 1 ? 'es' : '') + ' in current stock. Check the Matches tab!', extra: null };
           newMsgs = newMsgs.concat([{ from: 'ai', text: result.message || 'Done.', extra: null }]);
@@ -592,68 +671,92 @@ export default function App() {
   }
 
   async function handleDeleteListing(id) {
-    try { await deleteListing(id); setListings(listings.filter(function(l) { return l.id !== id; })); setConfirmDelete(null); showNotification('Listing deleted.'); } catch(e) { setErr('Delete failed: ' + e.message); }
+    try {
+      await deleteListing(id);
+      await cleanupDismissedMatches([id], []);
+      setListings(listings.filter(function(l) { return l.id !== id; }));
+      setDismissedMatches(dismissedMatches.filter(function(d) { return d.listing_id !== id; }));
+      setConfirmDelete(null); showNotification('Listing deleted.');
+    } catch(e) { setErr('Delete failed: ' + e.message); }
   }
 
   async function handleDeleteBuyer(id) {
-    try { await deleteBuyer(id); setBuyers(buyers.filter(function(b) { return b.id !== id; })); setConfirmDeleteBuyer(null); showNotification('Buyer request deleted.'); } catch(e) { setErr('Delete failed: ' + e.message); }
+    try {
+      await deleteBuyer(id);
+      await cleanupDismissedMatches([], [id]);
+      setBuyers(buyers.filter(function(b) { return b.id !== id; }));
+      setDismissedMatches(dismissedMatches.filter(function(d) { return d.buyer_id !== id; }));
+      setConfirmDeleteBuyer(null); showNotification('Buyer request deleted.');
+    } catch(e) { setErr('Delete failed: ' + e.message); }
   }
 
-  async function markMatched(listing, buyerName, buyerPhone) {
-    var updated = listings.map(function(l) {
-      return l.id === listing.id ? Object.assign({}, l, { status: 'matched', inTalksWith: buyerName || null, inTalksPhone: buyerPhone || null }) : l;
+  async function handleDismiss(listingId, buyerId) {
+    await saveDismissedMatch(listingId, buyerId);
+    setDismissedMatches(dismissedMatches.concat([{ listing_id: listingId, buyer_id: buyerId }]));
+  }
+
+  async function markInTalksTogether(listing, buyer) {
+    var updatedListings = listings.map(function(l) {
+      return l.id === listing.id ? Object.assign({}, l, { status: 'matched', inTalksWith: buyer.name, inTalksPhone: buyer.phone || null }) : l;
     });
-    setListings(updated); await saveAllListings(updated); showNotification('Moved to In Talks!');
+    var updatedBuyers = buyers.map(function(b) {
+      return b.id === buyer.id ? Object.assign({}, b, { status: 'in_talks', inTalksWith: listing.seller, inTalksPhone: listing.sellerPhone || null }) : b;
+    });
+    setListings(updatedListings); await saveAllListings(updatedListings);
+    setBuyers(updatedBuyers); for (var i = 0; i < updatedBuyers.length; i++) { if (updatedBuyers[i].id === buyer.id) await saveBuyer(updatedBuyers[i]); }
+    showNotification('Moved to In Talks!'); setTab('matched');
   }
 
-  async function markInTalks(item, type, talksWith, talksPhone) {
-    if (type === 'listing') {
-      var updated = listings.map(function(l) {
-        return l.id === item.id ? Object.assign({}, l, { status: 'matched', inTalksWith: talksWith || null, inTalksPhone: talksPhone || null }) : l;
-      });
-      setListings(updated); await saveAllListings(updated);
-    } else {
-      var updatedB = buyers.map(function(b) {
-        return b.id === item.id ? Object.assign({}, b, { status: 'in_talks', inTalksWith: talksWith || null, inTalksPhone: talksPhone || null }) : b;
-      });
-      setBuyers(updatedB);
-      for (var i = 0; i < updatedB.length; i++) { if (updatedB[i].id === item.id) await saveBuyer(updatedB[i]); }
-    }
-    showNotification('Moved to In Talks!');
+  async function markListingInTalks(listing, talksWith, talksPhone) {
+    var updatedListings = listings.map(function(l) {
+      return l.id === listing.id ? Object.assign({}, l, { status: 'matched', inTalksWith: talksWith || null, inTalksPhone: talksPhone || null }) : l;
+    });
+    setListings(updatedListings); await saveAllListings(updatedListings);
+    showNotification('Moved to In Talks!'); setTab('matched');
   }
 
-  async function reList(listing) {
-    var updated = listings.map(function(l) { return l.id === listing.id ? Object.assign({}, l, { status: 'available', inTalksWith: null, inTalksPhone: null }) : l; });
-    setListings(updated); await saveAllListings(updated); showNotification('Re-listed as available!');
+  async function markBuyerInTalks(buyer, talksWith, talksPhone) {
+    var updatedBuyers = buyers.map(function(b) {
+      return b.id === buyer.id ? Object.assign({}, b, { status: 'in_talks', inTalksWith: talksWith || null, inTalksPhone: talksPhone || null }) : b;
+    });
+    setBuyers(updatedBuyers);
+    for (var i = 0; i < updatedBuyers.length; i++) { if (updatedBuyers[i].id === buyer.id) await saveBuyer(updatedBuyers[i]); }
+    showNotification('Moved to In Talks!'); setTab('matched');
+  }
+
+  async function reListListing(listing) {
+    var updatedListings = listings.map(function(l) { return l.id === listing.id ? Object.assign({}, l, { status: 'available', inTalksWith: null, inTalksPhone: null }) : l; });
+    setListings(updatedListings); await saveAllListings(updatedListings); showNotification('Re-listed!');
+  }
+
+  async function reListBuyer(buyer) {
+    var updatedBuyers = buyers.map(function(b) { return b.id === buyer.id ? Object.assign({}, b, { status: 'looking', inTalksWith: null, inTalksPhone: null }) : b; });
+    setBuyers(updatedBuyers);
+    for (var i = 0; i < updatedBuyers.length; i++) { if (updatedBuyers[i].id === buyer.id) await saveBuyer(updatedBuyers[i]); }
+    showNotification('Re-listed!');
   }
 
   async function handleWithdraw(item, type, data) {
+    var notesSuffix = data.reason === 'Sold elsewhere'
+      ? 'Withdrawn - ' + (type === 'listing' ? 'sold' : 'bought') + ' elsewhere' + (data.soldTo ? ' with ' + data.soldTo : '') + (data.soldPrice ? ' at $' + data.soldPrice + '/hd' : '') + (data.soldWhere ? ' via ' + data.soldWhere : '')
+      : 'Withdrawn - ' + data.reason;
     if (type === 'listing') {
-      var notes = item.notes ? item.notes + ' | ' : '';
-      if (data.reason === 'Sold elsewhere') {
-        notes += 'Withdrawn - sold elsewhere' + (data.soldTo ? ' to ' + data.soldTo : '') + (data.soldPrice ? ' at $' + data.soldPrice + '/hd' : '') + (data.soldWhere ? ' via ' + data.soldWhere : '');
-      } else {
-        notes += 'Withdrawn - ' + data.reason;
-      }
-      var updated = listings.map(function(l) {
-        return l.id === item.id ? Object.assign({}, l, { status: 'inactive', notes: notes, actualSalePrice: data.soldPrice || l.actualSalePrice }) : l;
+      var updatedListings = listings.map(function(l) {
+        return l.id === item.id ? Object.assign({}, l, { status: 'inactive', notes: (l.notes ? l.notes + ' | ' : '') + notesSuffix, actualSalePrice: data.soldPrice || l.actualSalePrice }) : l;
       });
-      setListings(updated); await saveAllListings(updated);
+      setListings(updatedListings); await saveAllListings(updatedListings);
+      await cleanupDismissedMatches([item.id], []);
+      setDismissedMatches(dismissedMatches.filter(function(d) { return d.listing_id !== item.id; }));
     } else {
-      var bNotes = item.notes ? item.notes + ' | ' : '';
-      if (data.reason === 'Sold elsewhere') {
-        bNotes += 'Withdrawn - bought elsewhere' + (data.soldTo ? ' from ' + data.soldTo : '') + (data.soldPrice ? ' at $' + data.soldPrice + '/hd' : '') + (data.soldWhere ? ' via ' + data.soldWhere : '');
-      } else {
-        bNotes += 'Withdrawn - ' + data.reason;
-      }
-      var updatedB = buyers.map(function(b) {
-        return b.id === item.id ? Object.assign({}, b, { status: 'inactive', notes: bNotes }) : b;
+      var updatedBuyers = buyers.map(function(b) {
+        return b.id === item.id ? Object.assign({}, b, { status: 'inactive', notes: (b.notes ? b.notes + ' | ' : '') + notesSuffix }) : b;
       });
-      setBuyers(updatedB);
-      for (var i = 0; i < updatedB.length; i++) { if (updatedB[i].id === item.id) await saveBuyer(updatedB[i]); }
+      setBuyers(updatedBuyers);
+      for (var i = 0; i < updatedBuyers.length; i++) { if (updatedBuyers[i].id === item.id) await saveBuyer(updatedBuyers[i]); }
+      await cleanupDismissedMatches([], [item.id]);
+      setDismissedMatches(dismissedMatches.filter(function(d) { return d.buyer_id !== item.id; }));
     }
-    setWithdrawModal(null);
-    showNotification('Withdrawn.');
+    setWithdrawModal(null); showNotification('Withdrawn.');
   }
 
   async function saveEditListing(updated) {
@@ -676,11 +779,13 @@ export default function App() {
     if (isNaN(qty) || qty <= 0) qty = rem; if (qty > rem) qty = rem;
     var newSold = (sellModal.quantitySold || 0) + qty;
     var newStatus = newSold >= sellModal.quantity ? 'sold' : 'partial';
-    var updated = listings.map(function(l) {
+    var updatedListings = listings.map(function(l) {
       if (l.id !== sellModal.id) return l;
       return Object.assign({}, l, { quantitySold: newSold, buyer: sellBuyer || l.buyer || null, actualSalePrice: sellPrice ? parseFloat(sellPrice) : null, dateSold: new Date().toISOString(), status: newStatus });
     });
-    setListings(updated); await saveAllListings(updated);
+    setListings(updatedListings); await saveAllListings(updatedListings);
+    await cleanupDismissedMatches([sellModal.id], []);
+    setDismissedMatches(dismissedMatches.filter(function(d) { return d.listing_id !== sellModal.id; }));
     setSellModal(null); setSellQty(''); setSellBuyer(''); setSellPrice('');
     showNotification(qty + ' head marked as sold!'); setTab('sold');
   }
@@ -690,15 +795,22 @@ export default function App() {
   if (!session.user.email_confirmed_at) return <PendingScreen onSignOut={handleSignOut} />;
 
   var available = listings.filter(function(l) { return l.status === 'available' || l.status === 'partial'; });
-  var matched = listings.filter(function(l) { return l.status === 'matched'; });
+  var inTalksListings = listings.filter(function(l) { return l.status === 'matched'; });
+  var inTalksBuyers = buyers.filter(function(b) { return b.status === 'in_talks'; });
   var sold = listings.filter(function(l) { return l.status === 'sold'; });
-  var activeBuyers = buyers.filter(function(b) { return b.status === 'looking' || b.status === 'in_talks'; });
-  var allMatches = findMatches(listings, buyers).filter(function(m) {
-    return !dismissedMatches.some(function(d) { return d.buyerId === m.buyerId && d.listingId === m.listingId; });
-  });
+  var activeBuyers = buyers.filter(function(b) { return b.status === 'looking'; });
+  var allMatches = findMatches(listings, buyers, dismissedMatches);
+  var totalInTalks = inTalksListings.length + inTalksBuyers.filter(function(b) {
+    return !inTalksListings.some(function(l) { return l.inTalksWith === b.name; });
+  }).length;
+
   var categories = ['all'].concat([...new Set(available.map(function(l) { return l.category; }).filter(Boolean))]);
-  var shownStock = tab === 'sold' ? sold : tab === 'matched' ? matched : available;
-  if ((tab === 'stock' || tab === 'matched') && filterCat !== 'all') shownStock = shownStock.filter(function(l) { return l.category === filterCat; });
+  var buyerCategories = ['all'].concat([...new Set(activeBuyers.map(function(b) { return b.category; }).filter(Boolean))]);
+
+  var shownStock = tab === 'sold' ? sold : available;
+  if (tab === 'stock' && filterCat !== 'all') shownStock = shownStock.filter(function(l) { return l.category === filterCat; });
+  var shownBuyers = filterBuyerCat === 'all' ? activeBuyers : activeBuyers.filter(function(b) { return b.category === filterBuyerCat; });
+
   if (loading) return <div style={{ fontFamily: 'Georgia,serif', background: '#1a2e1a', minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#e8dcc8', fontSize: 18 }}>Loading StockBossNZ...</div>;
 
   var tabs = [
@@ -706,12 +818,12 @@ export default function App() {
     { k: 'stock', label: 'Sellers (' + available.length + ')' },
     { k: 'buyers', label: 'Buyers (' + activeBuyers.length + ')' },
     { k: 'matches', label: 'Matches (' + allMatches.length + ')' },
-    { k: 'matched', label: 'In Talks (' + matched.length + ')' },
+    { k: 'matched', label: 'In Talks (' + totalInTalks + ')' },
     { k: 'sold', label: 'Sold (' + sold.length + ')' }
   ];
   if (isAdmin) tabs.push({ k: 'admin', label: 'Admin' });
 
-  var btnStyle = function(bg, color) { return { flex: 1, padding: '10px 6px', background: bg, border: bg === 'none' ? '1px solid #c0392b' : 'none', color: color, borderRadius: 7, cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 12, fontWeight: 'bold' }; };
+  var btnStyle = function(bg) { return { flex: 1, padding: '10px 6px', background: bg, border: 'none', color: '#fff', borderRadius: 7, cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 12, fontWeight: 'bold' }; };
 
   return (
     <div style={{ fontFamily: 'Georgia,serif', background: '#f5f0e8', minHeight: '100vh', display: 'flex', flexDirection: 'column', maxWidth: 900, margin: '0 auto' }}>
@@ -720,7 +832,29 @@ export default function App() {
 
       {editListing && <EditListingModal listing={editListing} onSave={saveEditListing} onClose={function() { setEditListing(null); }} />}
       {editBuyer && <EditBuyerModal buyer={editBuyer} onSave={saveEditBuyer} onClose={function() { setEditBuyer(null); }} />}
-      {inTalksPrompt && <InTalksPromptModal onConfirm={function(name, phone) { inTalksPrompt.onConfirm(name, phone); setInTalksPrompt(null); }} onClose={function() { setInTalksPrompt(null); }} />}
+      {inTalksPrompt && (
+        <InTalksPromptModal
+          potentialMatch={inTalksPrompt.potentialMatch}
+          matchType={inTalksPrompt.matchType}
+          onConfirmMatch={function(match) {
+            if (inTalksPrompt.matchType === 'listing') {
+              markInTalksTogether(inTalksPrompt.item, match);
+            } else {
+              markInTalksTogether(match, inTalksPrompt.item);
+            }
+            setInTalksPrompt(null);
+          }}
+          onDifferentPerson={function(name, phone) {
+            if (inTalksPrompt.matchType === 'listing') {
+              markListingInTalks(inTalksPrompt.item, name, phone);
+            } else {
+              markBuyerInTalks(inTalksPrompt.item, name, phone);
+            }
+            setInTalksPrompt(null);
+          }}
+          onClose={function() { setInTalksPrompt(null); }}
+        />
+      )}
       {withdrawModal && <WithdrawModal name={withdrawModal.name} type={withdrawModal.type} onConfirm={function(data) { handleWithdraw(withdrawModal.item, withdrawModal.type, data); }} onClose={function() { setWithdrawModal(null); }} />}
 
       {confirmDelete && (
@@ -753,10 +887,10 @@ export default function App() {
         <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
           <div style={{ background: '#fff', borderRadius: 12, padding: 24, maxWidth: 400, width: '100%' }}>
             <div style={{ fontSize: 16, fontWeight: 'bold', color: '#1a2e1a', marginBottom: 4 }}>Mark as Sold</div>
-            <div style={{ fontSize: 13, color: '#888', marginBottom: 16 }}>{sellModal.seller + ' - ' + (sellModal.breed || '') + (sellModal.age ? ' ' + sellModal.age : '')}</div>
-            <div style={{ fontSize: 12, color: '#555', marginBottom: 6 }}>{'How many head sold? (blank = all ' + (sellModal.quantity - (sellModal.quantitySold || 0)) + ' remaining)'}</div>
-            <input value={sellQty} onChange={function(e) { setSellQty(e.target.value); }} type="number" placeholder={'All ' + (sellModal.quantity - (sellModal.quantitySold || 0)) + ' head'} style={{ width: '100%', padding: '10px', border: '1px solid #ddd', borderRadius: 8, fontFamily: 'Georgia,serif', fontSize: 13, marginBottom: 12, boxSizing: 'border-box' }} />
-            <div style={{ fontSize: 12, color: '#555', marginBottom: 6 }}>Buyer name and/or phone (optional):</div>
+            <div style={{ fontSize: 13, color: '#888', marginBottom: 16 }}>{(sellModal.seller || sellModal.name || '') + ' - ' + (sellModal.breed || '') + (sellModal.age ? ' ' + sellModal.age : '')}</div>
+            <div style={{ fontSize: 12, color: '#555', marginBottom: 6 }}>{'How many head sold? (blank = all ' + ((sellModal.quantity || 1) - (sellModal.quantitySold || 0)) + ' remaining)'}</div>
+            <input value={sellQty} onChange={function(e) { setSellQty(e.target.value); }} type="number" placeholder={'All ' + ((sellModal.quantity || 1) - (sellModal.quantitySold || 0)) + ' head'} style={{ width: '100%', padding: '10px', border: '1px solid #ddd', borderRadius: 8, fontFamily: 'Georgia,serif', fontSize: 13, marginBottom: 12, boxSizing: 'border-box' }} />
+            <div style={{ fontSize: 12, color: '#555', marginBottom: 6 }}>Buyer/Seller name and phone (optional):</div>
             <input value={sellBuyer} onChange={function(e) { setSellBuyer(e.target.value); }} placeholder="e.g. Johnson 0421 234 567" style={{ width: '100%', padding: '10px', border: '1px solid #ddd', borderRadius: 8, fontFamily: 'Georgia,serif', fontSize: 13, marginBottom: 12, boxSizing: 'border-box' }} />
             <div style={{ fontSize: 12, color: '#555', marginBottom: 4 }}>Actual sale price per head:</div>
             <div style={{ fontSize: 11, color: '#aaa', marginBottom: 6 }}>{'Listed at ' + (sellModal.pricePerHead ? '$' + sellModal.pricePerHead + '/hd' : 'no price') + ' — what did it actually sell for?'}</div>
@@ -860,13 +994,13 @@ export default function App() {
                     <div key={l.id} style={{ background: '#fff', borderRadius: 10, border: '1px solid #ddd', boxShadow: '0 1px 5px rgba(0,0,0,0.05)', overflow: 'hidden', opacity: l.status === 'sold' ? 0.65 : 1, borderLeft: '5px solid ' + cc }}>
                       <div style={{ padding: '13px 16px', display: 'flex', alignItems: 'flex-start', gap: 12, position: 'relative' }}>
                         {tab === 'stock' && (
-                          <div style={{ position: 'absolute', top: 8, right: 8, display: 'flex', gap: 6 }}>
-                            <button onClick={function() { setEditListing(l); }} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, padding: 2 }} title="Edit">✏️</button>
-                            <button onClick={function() { setConfirmDelete(l.id); }} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, color: '#c0392b', padding: 2, fontWeight: 'bold' }} title="Delete">✕</button>
+                          <div style={{ position: 'absolute', top: 8, right: 8, display: 'flex', gap: 6, alignItems: 'center' }}>
+                            <button onClick={function() { setEditListing(l); }} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, padding: 2 }}>✏️</button>
+                            <button onClick={function() { setConfirmDelete(l.id); }} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, color: '#c0392b', padding: 2, fontWeight: 'bold' }}>✕</button>
                           </div>
                         )}
                         {l.photoUrl && <img src={l.photoUrl} alt="stock" style={{ width: 60, height: 60, objectFit: 'cover', borderRadius: 7, flexShrink: 0 }} />}
-                        <div style={{ flex: 1, minWidth: 0, paddingRight: tab === 'stock' ? 48 : 0 }}>
+                        <div style={{ flex: 1, minWidth: 0, paddingRight: tab === 'stock' ? 52 : 0 }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 4, flexWrap: 'wrap' }}>
                             <span style={{ fontSize: 15, fontWeight: 'bold', color: '#1a2e1a' }}>{l.seller}</span>
                             {l.sellerPhone && <span style={{ fontSize: 11, color: '#888' }}>{l.sellerPhone}</span>}
@@ -883,8 +1017,8 @@ export default function App() {
                           {l.actualSalePrice && <div style={{ fontSize: 12, marginTop: 3 }}><span style={{ color: '#aaa' }}>{'Listed: $' + (l.pricePerHead || 'TBC') + ' -> '}</span><span style={{ color: '#2d6a4f', fontWeight: 'bold' }}>{'Sold: $' + l.actualSalePrice + '/hd'}</span></div>}
                           {l.dateSold && <div style={{ fontSize: 11, color: '#bbb', marginTop: 2 }}>{'Sold ' + new Date(l.dateSold).toLocaleDateString('en-NZ', { day: 'numeric', month: 'short', year: 'numeric' })}</div>}
                         </div>
-                        <div style={{ textAlign: 'center', minWidth: 56, flexShrink: 0 }}>
-                          <div style={{ fontSize: 22, fontWeight: 'bold', color: '#1a2e1a', lineHeight: 1 }}>{rem}</div>
+                        <div style={{ textAlign: 'center', minWidth: 44, flexShrink: 0, marginRight: tab === 'stock' ? 0 : 0 }}>
+                          <div style={{ fontSize: 20, fontWeight: 'bold', color: '#1a2e1a', lineHeight: 1 }}>{rem}</div>
                           <div style={{ fontSize: 10, color: '#bbb' }}>{'of ' + l.quantity}</div>
                           {l.quantitySold > 0 && <div style={{ fontSize: 10, color: '#e67e22' }}>{l.quantitySold + ' sold'}</div>}
                           <div style={{ background: badge.color, color: '#fff', borderRadius: 5, padding: '3px 6px', fontSize: 9, fontWeight: 'bold', marginTop: 4 }}>{badge.label}</div>
@@ -893,13 +1027,16 @@ export default function App() {
                       {tab === 'stock' && (
                         <div style={{ display: 'flex', gap: 6, padding: '10px 14px', borderTop: '1px solid #f0ede8', background: '#faf8f4', flexWrap: 'wrap' }}>
                           {listingMatches.length > 0 && <button onClick={function() { setTab('matches'); }} style={{ flex: 1, padding: '10px 6px', background: '#f0d060', border: 'none', color: '#1a2e1a', borderRadius: 7, cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 12, fontWeight: 'bold' }}>VIEW MATCHES</button>}
-                          <button onClick={function() { setInTalksPrompt({ onConfirm: function(name, phone) { markInTalks(l, 'listing', name, phone); } }); }} style={btnStyle('#8e44ad', '#fff')}>IN TALKS</button>
-                          <button onClick={function() { setSellModal(l); }} style={btnStyle('#2d6a4f', '#fff')}>MARK SOLD</button>
-                          <button onClick={function() { setWithdrawModal({ item: l, type: 'listing', name: l.seller }); }} style={btnStyle('#e67e22', '#fff')}>WITHDRAW</button>
+                          <button onClick={function() {
+                            var potential = findPotentialMatch(l, 'listing', listings, buyers, dismissedMatches);
+                            setInTalksPrompt({ item: l, matchType: 'listing', potentialMatch: potential });
+                          }} style={btnStyle('#8e44ad')}>IN TALKS</button>
+                          <button onClick={function() { setSellModal(l); }} style={btnStyle('#2d6a4f')}>MARK SOLD</button>
+                          <button onClick={function() { setWithdrawModal({ item: l, type: 'listing', name: l.seller }); }} style={btnStyle('#e67e22')}>WITHDRAW</button>
                         </div>
                       )}
                       {tab === 'sold' && (
-                        <div style={{ display: 'flex', padding: '10px 14px', borderTop: '1px solid #f0ede8', background: '#faf8f4' }}>
+                        <div style={{ display: 'flex', padding: '10px 14px', borderTop: '1px solid #f0ede8', background: '#faf8f4', justifyContent: 'flex-end' }}>
                           <button onClick={function() { setConfirmDelete(l.id); }} style={{ padding: '8px 16px', background: 'none', border: '1px solid #c0392b', color: '#c0392b', borderRadius: 7, cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 12 }}>✕ Delete</button>
                         </div>
                       )}
@@ -913,38 +1050,44 @@ export default function App() {
 
         {tab === 'buyers' && (
           <div style={{ flex: 1, overflowY: 'auto', padding: 14 }}>
-            {activeBuyers.length === 0 ? (
+            {buyerCategories.length > 1 && (
+              <div style={{ display: 'flex', gap: 7, marginBottom: 12, flexWrap: 'wrap' }}>
+                {buyerCategories.map(function(c) { return <button key={c} onClick={function() { setFilterBuyerCat(c); }} style={{ background: filterBuyerCat === c ? (CAT_COLORS[c] || '#2d4a2d') : 'none', color: filterBuyerCat === c ? '#fff' : '#555', border: '1px solid ' + (CAT_COLORS[c] || '#2d4a2d'), borderRadius: 20, padding: '4px 12px', fontSize: 12, cursor: 'pointer', fontFamily: 'Georgia,serif', textTransform: 'capitalize' }}>{c}</button>; })}
+              </div>
+            )}
+            {shownBuyers.length === 0 ? (
               <div style={{ textAlign: 'center', color: '#aaa', marginTop: 60, fontSize: 14 }}>No buyers yet. Use Chat to add one.</div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {activeBuyers.map(function(b) {
+                {shownBuyers.map(function(b) {
                   var cc = CAT_COLORS[b.category] || '#78909c';
                   var buyerMatches = allMatches.filter(function(m) { return m.buyerId === b.id; });
                   return (
                     <div key={b.id} style={{ background: '#fff', borderRadius: 10, border: '1px solid #ddd', boxShadow: '0 1px 5px rgba(0,0,0,0.05)', overflow: 'hidden', borderLeft: '5px solid ' + (buyerMatches.length > 0 ? '#f0d060' : cc) }}>
                       <div style={{ padding: '13px 16px', position: 'relative' }}>
                         <div style={{ position: 'absolute', top: 8, right: 8, display: 'flex', gap: 6 }}>
-                          <button onClick={function() { setEditBuyer(b); }} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, padding: 2 }} title="Edit">✏️</button>
-                          <button onClick={function() { setConfirmDeleteBuyer(b.id); }} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, color: '#c0392b', padding: 2, fontWeight: 'bold' }} title="Delete">✕</button>
+                          <button onClick={function() { setEditBuyer(b); }} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, padding: 2 }}>✏️</button>
+                          <button onClick={function() { setConfirmDeleteBuyer(b.id); }} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, color: '#c0392b', padding: 2, fontWeight: 'bold' }}>✕</button>
                         </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 4, flexWrap: 'wrap', paddingRight: 48 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 4, flexWrap: 'wrap', paddingRight: 52 }}>
                           <span style={{ fontSize: 15, fontWeight: 'bold', color: '#1a2e1a' }}>{b.name}</span>
                           {b.phone && <span style={{ fontSize: 11, color: '#888' }}>{b.phone}</span>}
                           {b.category && <span style={{ background: cc, color: '#fff', borderRadius: 4, padding: '1px 6px', fontSize: 10, textTransform: 'uppercase' }}>{b.category}</span>}
                           {buyerMatches.length > 0 && <span style={{ background: '#f0d060', color: '#1a2e1a', borderRadius: 4, padding: '1px 6px', fontSize: 10, fontWeight: 'bold' }}>{buyerMatches.length + ' MATCH' + (buyerMatches.length > 1 ? 'ES' : '')}</span>}
-                          {b.status === 'in_talks' && <span style={{ background: '#8e44ad', color: '#fff', borderRadius: 4, padding: '1px 6px', fontSize: 10, fontWeight: 'bold' }}>IN TALKS</span>}
                         </div>
                         <div style={{ fontSize: 14, color: '#333', marginBottom: 3 }}>{'Looking for: '}<strong>{b.breed || 'Any breed'}</strong>{b.age ? (' - ' + b.age) : ''}{b.quantity ? (' - ' + b.quantity + ' head') : ''}{b.weightKg ? (' - ' + b.weightKg + 'kg') : ''}</div>
                         {b.maxPricePerHead && <div style={{ fontSize: 12, color: '#2d6a4f', fontWeight: 'bold' }}>{'Up to $' + b.maxPricePerHead + '/hd'}</div>}
-                        {b.inTalksWith && <div style={{ fontSize: 12, color: '#8e44ad', marginTop: 2 }}>{'In talks with: ' + b.inTalksWith + (b.inTalksPhone ? ' - ' + b.inTalksPhone : '')}</div>}
                         {b.notes && <div style={{ fontSize: 12, color: '#888' }}>{b.notes}</div>}
                         <div style={{ fontSize: 11, color: '#bbb', marginTop: 2 }}>{'Added ' + new Date(b.dateAdded).toLocaleDateString('en-NZ', { day: 'numeric', month: 'short' })}</div>
                       </div>
                       <div style={{ display: 'flex', gap: 6, padding: '10px 14px', borderTop: '1px solid #f0ede8', background: '#faf8f4', flexWrap: 'wrap' }}>
                         {buyerMatches.length > 0 && <button onClick={function() { setTab('matches'); }} style={{ flex: 1, padding: '10px 6px', background: '#f0d060', border: 'none', color: '#1a2e1a', borderRadius: 7, cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 12, fontWeight: 'bold' }}>VIEW MATCHES</button>}
-                        <button onClick={function() { setInTalksPrompt({ onConfirm: function(name, phone) { markInTalks(b, 'buyer', name, phone); } }); }} style={btnStyle('#8e44ad', '#fff')}>IN TALKS</button>
-                        <button onClick={function() { setSellModal(Object.assign({ seller: b.name, breed: b.breed, age: b.age, quantity: b.quantity || 1, quantitySold: 0, pricePerHead: b.maxPricePerHead }, b)); }} style={btnStyle('#2d6a4f', '#fff')}>MARK SOLD</button>
-                        <button onClick={function() { setWithdrawModal({ item: b, type: 'buyer', name: b.name }); }} style={btnStyle('#e67e22', '#fff')}>WITHDRAW</button>
+                        <button onClick={function() {
+                          var potential = findPotentialMatch(b, 'buyer', listings, buyers, dismissedMatches);
+                          setInTalksPrompt({ item: b, matchType: 'buyer', potentialMatch: potential });
+                        }} style={btnStyle('#8e44ad')}>IN TALKS</button>
+                        <button onClick={function() { setSellModal(Object.assign({ seller: b.name, breed: b.breed, age: b.age, quantity: b.quantity || 1, quantitySold: 0, pricePerHead: b.maxPricePerHead }, b)); }} style={btnStyle('#2d6a4f')}>MARK SOLD</button>
+                        <button onClick={function() { setWithdrawModal({ item: b, type: 'buyer', name: b.name }); }} style={btnStyle('#e67e22')}>WITHDRAW</button>
                       </div>
                     </div>
                   );
@@ -984,9 +1127,9 @@ export default function App() {
                         </div>
                       </div>
                       <div style={{ padding: '10px 16px', borderTop: '1px solid #f0ede8', display: 'flex', gap: 8 }}>
-                        <button onClick={function() { markMatched(m.listing, m.buyer.name, m.buyer.phone); }} style={btnStyle('#8e44ad', '#fff')}>IN TALKS</button>
-                        <button onClick={function() { setSellModal(m.listing); }} style={btnStyle('#2d6a4f', '#fff')}>MARK SOLD</button>
-                        <button onClick={function() { setDismissedMatches(dismissedMatches.concat([{ buyerId: m.buyer.id, listingId: m.listing.id }])); }} style={{ flex: 1, padding: '10px 6px', background: 'none', border: '1px solid #999', color: '#999', borderRadius: 7, cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 12 }}>DISMISS</button>
+                        <button onClick={function() { markInTalksTogether(m.listing, m.buyer); }} style={btnStyle('#8e44ad')}>IN TALKS</button>
+                        <button onClick={function() { setSellModal(m.listing); }} style={btnStyle('#2d6a4f')}>MARK SOLD</button>
+                        <button onClick={function() { handleDismiss(m.listing.id, m.buyer.id); }} style={{ flex: 1, padding: '10px 6px', background: 'none', border: '1px solid #999', color: '#999', borderRadius: 7, cursor: 'pointer', fontFamily: 'Georgia,serif', fontSize: 12 }}>DISMISS</button>
                       </div>
                     </div>
                   );
@@ -998,17 +1141,19 @@ export default function App() {
 
         {tab === 'matched' && (
           <div style={{ flex: 1, overflowY: 'auto', padding: 14 }}>
-            {matched.length === 0 ? (
-              <div style={{ textAlign: 'center', color: '#aaa', marginTop: 60, fontSize: 14 }}>No stock in talks yet.</div>
+            {totalInTalks === 0 ? (
+              <div style={{ textAlign: 'center', color: '#aaa', marginTop: 60, fontSize: 14 }}>No one in talks yet.</div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                {matched.map(function(l) {
-                  var cc = CAT_COLORS[l.category] || '#78909c';
+                {inTalksListings.map(function(l) {
                   return (
-                    <div key={l.id} style={{ background: '#fff', borderRadius: 10, border: '2px solid #8e44ad', boxShadow: '0 2px 8px rgba(142,68,173,0.15)', overflow: 'hidden' }}>
+                    <div key={l.id} style={{ background: '#fff', borderRadius: 10, border: '2px solid #8e44ad', overflow: 'hidden' }}>
                       <div style={{ background: '#8e44ad', padding: '8px 16px', fontSize: 12, fontWeight: 'bold', color: '#fff', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <span>IN TALKS</span>
-                        <button onClick={function() { setConfirmDelete(l.id); }} style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.8)', cursor: 'pointer', fontSize: 16, fontWeight: 'bold', padding: 0 }}>✕</button>
+                        <div style={{ display: 'flex', gap: 8 }}>
+                          <button onClick={function() { setEditListing(l); }} style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.8)', cursor: 'pointer', fontSize: 14, padding: 0 }}>✏️</button>
+                          <button onClick={function() { setConfirmDelete(l.id); }} style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.8)', cursor: 'pointer', fontSize: 16, fontWeight: 'bold', padding: 0 }}>✕</button>
+                        </div>
                       </div>
                       <div style={{ display: 'flex' }}>
                         <div style={{ flex: 1, padding: '12px 16px', borderRight: '1px solid #f0ede8' }}>
@@ -1024,13 +1169,47 @@ export default function App() {
                         <div style={{ flex: 1, padding: '12px 16px' }}>
                           <div style={{ fontSize: 10, color: '#aaa', marginBottom: 4, letterSpacing: 1 }}>BUYER</div>
                           <div style={{ fontSize: 14, fontWeight: 'bold', color: '#1a2e1a' }}>{l.inTalksWith || l.buyer || 'External'}</div>
-                          {l.inTalksPhone && <div style={{ fontSize: 12, color: '#888' }}>{l.inTalksPhone}</div>}
-                          {l.buyerPhone && !l.inTalksPhone && <div style={{ fontSize: 12, color: '#888' }}>{l.buyerPhone}</div>}
+                          {(l.inTalksPhone || l.buyerPhone) && <div style={{ fontSize: 12, color: '#888' }}>{l.inTalksPhone || l.buyerPhone}</div>}
                         </div>
                       </div>
                       <div style={{ padding: '10px 16px', borderTop: '1px solid #f0ede8', display: 'flex', gap: 8 }}>
-                        <button onClick={function() { reList(l); }} style={btnStyle('#2980b9', '#fff')}>RE-LIST</button>
-                        <button onClick={function() { setSellModal(l); }} style={btnStyle('#2d6a4f', '#fff')}>MARK SOLD</button>
+                        <button onClick={function() { reListListing(l); }} style={btnStyle('#2980b9')}>RE-LIST</button>
+                        <button onClick={function() { setSellModal(l); }} style={btnStyle('#2d6a4f')}>MARK SOLD</button>
+                      </div>
+                    </div>
+                  );
+                })}
+                {inTalksBuyers.filter(function(b) {
+                  return !inTalksListings.some(function(l) { return l.inTalksWith === b.name; });
+                }).map(function(b) {
+                  var cc = CAT_COLORS[b.category] || '#78909c';
+                  return (
+                    <div key={b.id} style={{ background: '#fff', borderRadius: 10, border: '2px solid #8e44ad', overflow: 'hidden' }}>
+                      <div style={{ background: '#8e44ad', padding: '8px 16px', fontSize: 12, fontWeight: 'bold', color: '#fff', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span>IN TALKS</span>
+                        <div style={{ display: 'flex', gap: 8 }}>
+                          <button onClick={function() { setEditBuyer(b); }} style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.8)', cursor: 'pointer', fontSize: 14, padding: 0 }}>✏️</button>
+                          <button onClick={function() { setConfirmDeleteBuyer(b.id); }} style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.8)', cursor: 'pointer', fontSize: 16, fontWeight: 'bold', padding: 0 }}>✕</button>
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex' }}>
+                        <div style={{ flex: 1, padding: '12px 16px', borderRight: '1px solid #f0ede8' }}>
+                          <div style={{ fontSize: 10, color: '#aaa', marginBottom: 4, letterSpacing: 1 }}>SELLER</div>
+                          <div style={{ fontSize: 14, fontWeight: 'bold', color: '#1a2e1a' }}>{b.inTalksWith || 'External'}</div>
+                          {b.inTalksPhone && <div style={{ fontSize: 12, color: '#888' }}>{b.inTalksPhone}</div>}
+                        </div>
+                        <div style={{ flex: 1, padding: '12px 16px' }}>
+                          <div style={{ fontSize: 10, color: '#aaa', marginBottom: 4, letterSpacing: 1 }}>BUYER</div>
+                          <div style={{ fontSize: 14, fontWeight: 'bold', color: '#1a2e1a' }}>{b.name}</div>
+                          {b.phone && <div style={{ fontSize: 12, color: '#888' }}>{b.phone}</div>}
+                          <div style={{ fontSize: 13, color: '#333' }}><strong>{b.breed || 'Any breed'}</strong>{b.age ? ' ' + b.age : ''}</div>
+                          {b.weightKg && <div style={{ fontSize: 12, color: '#888' }}>{b.weightKg + 'kg'}</div>}
+                          {b.maxPricePerHead && <div style={{ fontSize: 12, color: '#2d6a4f' }}>{'Up to $' + b.maxPricePerHead + '/hd'}</div>}
+                        </div>
+                      </div>
+                      <div style={{ padding: '10px 16px', borderTop: '1px solid #f0ede8', display: 'flex', gap: 8 }}>
+                        <button onClick={function() { reListBuyer(b); }} style={btnStyle('#2980b9')}>RE-LIST</button>
+                        <button onClick={function() { setSellModal(Object.assign({ seller: b.name, breed: b.breed, age: b.age, quantity: b.quantity || 1, quantitySold: 0, pricePerHead: b.maxPricePerHead }, b)); }} style={btnStyle('#2d6a4f')}>MARK SOLD</button>
                       </div>
                     </div>
                   );
