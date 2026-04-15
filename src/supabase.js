@@ -44,7 +44,8 @@ export async function saveListing(listing) {
     price_per_head: listing.pricePerHead || null, cents_per_kg: listing.centsPerKg || null,
     actual_sale_price: listing.actualSalePrice || null, notes: listing.notes || null,
     photo_url: listing.photoUrl || null, date_added: listing.dateAdded || new Date().toISOString(),
-    date_sold: listing.dateSold || null, status: listing.status || 'available'
+    date_sold: listing.dateSold || null, status: listing.status || 'available',
+    in_talks_with: listing.inTalksWith || null, in_talks_phone: listing.inTalksPhone || null
   };
   const { error } = await supabase.from('listings').upsert(row);
   if (error) throw error;
@@ -91,7 +92,8 @@ export async function saveBuyer(buyer) {
     breed: buyer.breed || null, category: buyer.category || null, age: buyer.age || null,
     quantity: buyer.quantity || null, weight_kg: buyer.weightKg || null,
     max_price_per_head: buyer.maxPricePerHead || null, notes: buyer.notes || null,
-    date_added: buyer.dateAdded || new Date().toISOString(), status: buyer.status || 'looking'
+    date_added: buyer.dateAdded || new Date().toISOString(), status: buyer.status || 'looking',
+    in_talks_with: buyer.inTalksWith || null, in_talks_phone: buyer.inTalksPhone || null
   };
   const { error } = await supabase.from('buyers').upsert(row);
   if (error) throw error;
@@ -116,4 +118,29 @@ export async function getMarketData() {
 export async function clearMarketData() {
   const { error } = await supabase.from('market_data').delete().neq('id', 0);
   if (error) throw error;
+}
+
+export async function getDismissedMatches() {
+  const { data, error } = await supabase.from('dismissed_matches').select('*');
+  if (error) throw error;
+  return data || [];
+}
+
+export async function saveDismissedMatch(listingId, buyerId) {
+  const { error } = await supabase.from('dismissed_matches').upsert({ listing_id: listingId, buyer_id: buyerId });
+  if (error) throw error;
+}
+
+export async function deleteDismissedMatch(listingId, buyerId) {
+  const { error } = await supabase.from('dismissed_matches').delete().eq('listing_id', listingId).eq('buyer_id', buyerId);
+  if (error) throw error;
+}
+
+export async function cleanupDismissedMatches(listingIds, buyerIds) {
+  if (listingIds.length > 0) {
+    await supabase.from('dismissed_matches').delete().in('listing_id', listingIds);
+  }
+  if (buyerIds.length > 0) {
+    await supabase.from('dismissed_matches').delete().in('buyer_id', buyerIds);
+  }
 }
