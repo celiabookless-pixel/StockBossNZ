@@ -1006,7 +1006,7 @@ export default function App() {
                           </div>
                         )}
                         {l.photoUrl && <img src={l.photoUrl} alt="stock" style={{ width: 60, height: 60, objectFit: 'cover', borderRadius: 7, flexShrink: 0 }} />}
-                        <div style={{ flex: 1, minWidth: 0, paddingRight: tab === 'stock' ? 70 : 0 }}>
+                        <div style={{ flex: 1, minWidth: 0, paddingRight: tab === 'stock' ? 90 : 0 }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 4, flexWrap: 'wrap' }}>
                             <span style={{ fontSize: 15, fontWeight: 'bold', color: '#1a2e1a' }}>{l.seller}</span>
                             {l.sellerPhone && <span style={{ fontSize: 11, color: '#888' }}>{l.sellerPhone}</span>}
