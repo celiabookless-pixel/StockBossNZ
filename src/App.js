@@ -1023,7 +1023,7 @@ export default function App() {
                           {l.actualSalePrice && <div style={{ fontSize: 12, marginTop: 3 }}><span style={{ color: '#aaa' }}>{'Listed: $' + (l.pricePerHead || 'TBC') + ' -> '}</span><span style={{ color: '#2d6a4f', fontWeight: 'bold' }}>{'Sold: $' + l.actualSalePrice + '/hd'}</span></div>}
                           {l.dateSold && <div style={{ fontSize: 11, color: '#bbb', marginTop: 2 }}>{'Sold ' + new Date(l.dateSold).toLocaleDateString('en-NZ', { day: 'numeric', month: 'short', year: 'numeric' })}</div>}
                         </div>
-                        <div style={{ textAlign: 'center', minWidth: 44, flexShrink: 0, marginRight: tab === 'stock' ? 0 : 0 }}>
+                        <div style={{ textAlign: 'center', minWidth: 44, flexShrink: 0, marginTop: 28 }}>
                           <div style={{ fontSize: 20, fontWeight: 'bold', color: '#1a2e1a', lineHeight: 1 }}>{rem}</div>
                           <div style={{ fontSize: 10, color: '#bbb' }}>{'of ' + l.quantity}</div>
                           {l.quantitySold > 0 && <div style={{ fontSize: 10, color: '#e67e22' }}>{l.quantitySold + ' sold'}</div>}
