@@ -725,9 +725,15 @@ export default function App() {
   }
 
   async function reListListing(listing) {
-    var updatedListings = listings.map(function(l) { return l.id === listing.id ? Object.assign({}, l, { status: 'available', inTalksWith: null, inTalksPhone: null }) : l; });
-    setListings(updatedListings); await saveAllListings(updatedListings); showNotification('Re-listed!');
-  }
+  var linkedBuyer = buyers.find(function(b) { return b.name === listing.inTalksWith && b.status === 'in_talks'; });
+  var updatedListings = listings.map(function(l) { return l.id === listing.id ? Object.assign({}, l, { status: 'available', inTalksWith: null, inTalksPhone: null }) : l; });
+  var updatedBuyers = linkedBuyer ? buyers.map(function(b) { return b.id === linkedBuyer.id ? Object.assign({}, b, { status: 'looking', inTalksWith: null, inTalksPhone: null }) : b; }) : buyers;
+  setListings(updatedListings);
+  setBuyers(updatedBuyers);
+  await saveAllListings(updatedListings);
+  if (linkedBuyer) { for (var i = 0; i < updatedBuyers.length; i++) { if (updatedBuyers[i].id === linkedBuyer.id) await saveBuyer(updatedBuyers[i]); } }
+  showNotification('Re-listed!');
+}
 
   async function reListBuyer(buyer) {
     var updatedBuyers = buyers.map(function(b) { return b.id === buyer.id ? Object.assign({}, b, { status: 'looking', inTalksWith: null, inTalksPhone: null }) : b; });
