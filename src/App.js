@@ -969,9 +969,6 @@ export default function App() {
               {['Pete has 80 Angus R2 steers 420kg Hawkes Bay $1100/hd', 'Johnson looking for 60 R2 steers around 400kg up to $1100', 'What would Angus R2 steers 420kg be worth?'].map(function(q) {
                 return <button key={q} onClick={function() { send(q); }} style={{ background: 'none', border: '1px solid #2d4a2d', color: '#2d4a2d', borderRadius: 20, padding: '4px 11px', fontSize: 11, cursor: 'pointer', fontFamily: 'Georgia,serif' }}>{q}</button>;
               })}
-              <button onClick={function() { fileRef.current && fileRef.current.click(); }} style={{ background: 'none', border: '1px solid #6d4c41', color: '#6d4c41', borderRadius: 20, padding: '4px 11px', fontSize: 11, cursor: 'pointer', fontFamily: 'Georgia,serif' }}>Upload photo</button>
-              <input ref={fileRef} type="file" accept="image/*" onChange={handlePhoto} style={{ display: 'none' }} />
-            </div>
             <div style={{ padding: '8px 18px 18px', display: 'flex', gap: 8 }}>
               <input value={input} onChange={function(e) { setInput(e.target.value); }} onKeyDown={function(e) { if (e.key === 'Enter') send(); }} placeholder="Add stock or buyer — include name, age, sex and weight..." style={{ flex: 1, padding: '11px 14px', borderRadius: 9, border: '2px solid #2d4a2d', fontFamily: 'Georgia,serif', fontSize: 14, background: '#fff', outline: 'none', color: '#111' }} />
               <button onClick={function() { send(); }} disabled={busy || !input.trim()} style={{ background: (busy || !input.trim()) ? '#999' : '#2d4a2d', color: '#e8dcc8', border: 'none', borderRadius: 9, padding: '11px 18px', cursor: (busy || !input.trim()) ? 'not-allowed' : 'pointer', fontFamily: 'Georgia,serif', fontSize: 14, fontWeight: 'bold' }}>Send</button>
