@@ -327,6 +327,7 @@ function EditListingModal({ listing, onSave, onClose }) {
             </div>
           );
         })}
+          <div style={{ marginBottom: 10 }}><div style={{ fontSize: 11, color: '#555', marginBottom: 3 }}>Photo</div><input type="file" accept="image/*" onChange={async function(e) { var file = e.target.files[0]; if (!file) return; try { var url = await uploadPhoto(file); onSave(Object.assign({}, listing, { photoUrl: url })); } catch(err) { alert('Upload failed: ' + err.message); } }} style={{ fontSize: 12, fontFamily: 'Georgia,serif' }} /></div>
         <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
           <button onClick={onClose} style={{ flex: 1, padding: '10px', border: '1px solid #ddd', borderRadius: 8, background: '#fff', cursor: 'pointer', fontFamily: 'Georgia,serif' }}>Cancel</button>
           <button onClick={handleSave} style={{ flex: 1, padding: '10px', border: 'none', borderRadius: 8, background: '#2d4a2d', color: '#fff', cursor: 'pointer', fontFamily: 'Georgia,serif', fontWeight: 'bold' }}>Save</button>
