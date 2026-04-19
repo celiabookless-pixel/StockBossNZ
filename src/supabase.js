@@ -61,9 +61,26 @@ export async function deleteListing(id) {
 }
 
 export async function uploadPhoto(file) {
-  const ext = file.name.split('.').pop();
-  const fileName = Date.now() + '.' + ext;
-  const { error } = await supabase.storage.from('photos').upload(fileName, file);
+  const compressed = await new Promise(function(resolve) {
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      var img = new Image();
+      img.onload = function() {
+        var canvas = document.createElement('canvas');
+        var maxSize = 800;
+        var w = img.width; var h = img.height;
+        if (w > h && w > maxSize) { h = Math.round(h * maxSize / w); w = maxSize; }
+        else if (h > maxSize) { w = Math.round(w * maxSize / h); h = maxSize; }
+        canvas.width = w; canvas.height = h;
+        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+        canvas.toBlob(function(blob) { resolve(blob); }, 'image/jpeg', 0.75);
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+  const fileName = Date.now() + '.jpg';
+  const { error } = await supabase.storage.from('photos').upload(fileName, compressed);
   if (error) throw error;
   const { data } = supabase.storage.from('photos').getPublicUrl(fileName);
   return data.publicUrl;
