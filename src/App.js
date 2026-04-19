@@ -104,7 +104,9 @@ function isPriceQuery(msg) {
 }
 
 async function askClaude(userMsg, listings, buyers, history, marketData) {
-  var contextPrefix = 'Date: ' + new Date().toISOString() + '\nStock: ' + JSON.stringify(listings) + '\nBuyers: ' + JSON.stringify(buyers);
+  var slimListings = listings.filter(function(l) { return l.status === 'available' || l.status === 'partial' || l.status === 'matched'; }).map(function(l) { return { id: l.id, seller: l.seller, category: l.category, age: l.age, weightKg: l.weightKg, breed: l.breed, quantity: l.quantity, quantitySold: l.quantitySold, status: l.status, pricePerHead: l.pricePerHead, location: l.location }; });
+var slimBuyers = buyers.filter(function(b) { return b.status === 'looking' || b.status === 'in_talks'; }).map(function(b) { return { id: b.id, name: b.name, category: b.category, age: b.age, weightKg: b.weightKg, breed: b.breed, quantity: b.quantity, status: b.status, maxPricePerHead: b.maxPricePerHead }; });
+var contextPrefix = 'Date: ' + new Date().toISOString() + '\nStock: ' + JSON.stringify(slimListings) + '\nBuyers: ' + JSON.stringify(slimBuyers);
   if (marketData && marketData.length > 0) {
     contextPrefix += '\nMarketData: ' + JSON.stringify(marketData);
   }
