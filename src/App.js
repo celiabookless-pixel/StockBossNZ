@@ -130,7 +130,7 @@ var contextPrefix = 'Date: ' + new Date().toISOString() + '\nStock: ' + JSON.str
   }
   const data = await res.json();
   const raw = (data.content || []).map(function(b) { return b.text || ''; }).join('').trim();
-  return JSON.parse(raw);
+  try { return JSON.parse(raw); } catch(e) { return { action: 'chat', message: raw }; }
 }
 
 const MIN_MATCH_SCORE = 5;
