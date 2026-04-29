@@ -616,7 +616,7 @@ export default function App() {
     setInput(''); setErr(null);
     var userMsg = { from: 'user', text: msg, extra: null };
     var newMsgs = msgs.concat([userMsg]);
-    setMsgs(newMsgs); await saveMessage(userMsg); setBusy(true);
+    setMsgs(newMsgs); await saveMessage(userMsg); if (!isAdmin) { setBusy(false); return; } setBusy(true);
     try {
       var mdToSend = [];
       if (isPriceQuery(msg)) {
