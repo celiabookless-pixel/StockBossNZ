@@ -105,8 +105,8 @@ function isPriceQuery(msg) {
 
 async function askClaude(userMsg, listings, buyers, history, marketData) {
   var slimListings = listings.filter(function(l) { return l.status === 'available' || l.status === 'partial' || l.status === 'matched'; }).map(function(l) { return { id: l.id, seller: l.seller, category: l.category, age: l.age, weightKg: l.weightKg, breed: l.breed, quantity: l.quantity, quantitySold: l.quantitySold, status: l.status, pricePerHead: l.pricePerHead, location: l.location }; });
-var slimBuyers = buyers.filter(function(b) { return b.status === 'looking' || b.status === 'in_talks'; }).map(function(b) { return { id: b.id, name: b.name, category: b.category, age: b.age, weightKg: b.weightKg, breed: b.breed, quantity: b.quantity, status: b.status, maxPricePerHead: b.maxPricePerHead }; });
-var contextPrefix = 'Date: ' + new Date().toISOString() + '\nStock: ' + JSON.stringify(slimListings) + '\nBuyers: ' + JSON.stringify(slimBuyers);
+  var slimBuyers = buyers.filter(function(b) { return b.status === 'looking' || b.status === 'in_talks'; }).map(function(b) { return { id: b.id, name: b.name, category: b.category, age: b.age, weightKg: b.weightKg, breed: b.breed, quantity: b.quantity, status: b.status, maxPricePerHead: b.maxPricePerHead }; });
+  var contextPrefix = 'Date: ' + new Date().toISOString() + '\nStock: ' + JSON.stringify(slimListings) + '\nBuyers: ' + JSON.stringify(slimBuyers);
   if (marketData && marketData.length > 0) {
     contextPrefix += '\nMarketData: ' + JSON.stringify(marketData);
   }
@@ -130,6 +130,7 @@ var contextPrefix = 'Date: ' + new Date().toISOString() + '\nStock: ' + JSON.str
   }
   const data = await res.json();
   const raw = (data.content || []).map(function(b) { return b.text || ''; }).join('').trim();
+  // FIX: safely parse JSON, fall back to chat action if malformed
   try { return JSON.parse(raw); } catch(e) { return { action: 'chat', message: raw }; }
 }
 
@@ -327,7 +328,7 @@ function EditListingModal({ listing, onSave, onClose }) {
             </div>
           );
         })}
-          <div style={{ marginBottom: 10 }}><div style={{ fontSize: 11, color: '#555', marginBottom: 3 }}>Photo</div><input type="file" accept="image/*" onChange={async function(e) { var file = e.target.files[0]; if (!file) return; try { var url = await uploadPhoto(file); onSave(Object.assign({}, listing, { photoUrl: url })); } catch(err) { alert('Upload failed: ' + err.message); } }} style={{ fontSize: 12, fontFamily: 'Georgia,serif' }} /></div>
+        <div style={{ marginBottom: 10 }}><div style={{ fontSize: 11, color: '#555', marginBottom: 3 }}>Photo</div><input type="file" accept="image/*" onChange={async function(e) { var file = e.target.files[0]; if (!file) return; try { var url = await uploadPhoto(file); onSave(Object.assign({}, listing, { photoUrl: url })); } catch(err) { alert('Upload failed: ' + err.message); } }} style={{ fontSize: 12, fontFamily: 'Georgia,serif' }} /></div>
         <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
           <button onClick={onClose} style={{ flex: 1, padding: '10px', border: '1px solid #ddd', borderRadius: 8, background: '#fff', cursor: 'pointer', fontFamily: 'Georgia,serif' }}>Cancel</button>
           <button onClick={handleSave} style={{ flex: 1, padding: '10px', border: 'none', borderRadius: 8, background: '#2d4a2d', color: '#fff', cursor: 'pointer', fontFamily: 'Georgia,serif', fontWeight: 'bold' }}>Save</button>
@@ -550,6 +551,7 @@ function AdminPanel({ listings, buyers, onNotification }) {
     </div>
   );
 }
+
 export default function App() {
   var [session, setSession] = useState(null);
   var [authLoading, setAuthLoading] = useState(true);
@@ -616,7 +618,15 @@ export default function App() {
     setInput(''); setErr(null);
     var userMsg = { from: 'user', text: msg, extra: null };
     var newMsgs = msgs.concat([userMsg]);
-    setMsgs(newMsgs); await saveMessage(userMsg); if (!isAdmin) { setBusy(false); return; } setBusy(true);
+    setMsgs(newMsgs);
+    await saveMessage(userMsg);
+
+    // FIX: non-admin users just save their message and stay on chat - no AI processing
+    if (!isAdmin) {
+      return;
+    }
+
+    setBusy(true);
     try {
       var mdToSend = [];
       if (isPriceQuery(msg)) {
@@ -633,7 +643,9 @@ export default function App() {
       if (result.listings) { updatedListings = result.listings; setListings(updatedListings); await saveAllListings(updatedListings); }
       if (result.buyers) { updatedBuyers = result.buyers; setBuyers(updatedBuyers); for (var i = 0; i < updatedBuyers.length; i++) { await saveBuyer(updatedBuyers[i]); } }
       if (result.action === 'add_stock') {
-        showNotification('Stock added!'); setTab('stock');
+        showNotification('Stock added!');
+        // FIX: only navigate for admin
+        if (isAdmin) setTab('stock');
         var matches = findMatches(updatedListings, updatedBuyers, dismissedMatches);
         if (matches.length > 0) {
           var matchMsg = { from: 'ai', text: 'Heads up! Found ' + matches.length + ' potential match' + (matches.length > 1 ? 'es' : '') + ' with buyers. Check the Matches tab!', extra: null };
@@ -642,7 +654,9 @@ export default function App() {
         }
       }
       if (result.action === 'add_buyer') {
-        showNotification('Buyer added!'); setTab('buyers');
+        showNotification('Buyer added!');
+        // FIX: only navigate for admin
+        if (isAdmin) setTab('buyers');
         var matches2 = findMatches(updatedListings, updatedBuyers, dismissedMatches);
         if (matches2.length > 0) {
           var matchMsg2 = { from: 'ai', text: 'Great news! Found ' + matches2.length + ' potential match' + (matches2.length > 1 ? 'es' : '') + ' in current stock. Check the Matches tab!', extra: null };
@@ -650,7 +664,8 @@ export default function App() {
           setMsgs(newMsgs.concat([matchMsg2])); await saveMessage(matchMsg2); setBusy(false); return;
         }
       }
-      if (result.action === 'sell_stock') setTab('sold');
+      // FIX: only navigate for admin
+      if (result.action === 'sell_stock' && isAdmin) setTab('sold');
       var aiMsg = { from: 'ai', text: result.message || 'Done.', extra: result.estimate || null };
       setMsgs(newMsgs.concat([aiMsg])); await saveMessage(aiMsg);
     } catch(e) {
@@ -727,16 +742,29 @@ export default function App() {
     showNotification('Moved to In Talks!'); setTab('matched');
   }
 
+  // FIX: reListListing now correctly finds linked buyer by both name and seller match
   async function reListListing(listing) {
-  var linkedBuyer = buyers.find(function(b) { return b.name === listing.inTalksWith && b.status === 'in_talks'; });
-  var updatedListings = listings.map(function(l) { return l.id === listing.id ? Object.assign({}, l, { status: 'available', inTalksWith: null, inTalksPhone: null }) : l; });
-  var updatedBuyers = linkedBuyer ? buyers.map(function(b) { return b.id === linkedBuyer.id ? Object.assign({}, b, { status: 'looking', inTalksWith: null, inTalksPhone: null }) : b; }) : buyers;
-  setListings(updatedListings);
-  setBuyers(updatedBuyers);
-  await saveAllListings(updatedListings);
-  if (linkedBuyer) { for (var i = 0; i < updatedBuyers.length; i++) { if (updatedBuyers[i].id === linkedBuyer.id) await saveBuyer(updatedBuyers[i]); } }
-  showNotification('Re-listed!');
-}
+    var linkedBuyer = buyers.find(function(b) {
+      return b.status === 'in_talks' && (b.name === listing.inTalksWith || b.inTalksWith === listing.seller);
+    });
+    var updatedListings = listings.map(function(l) {
+      return l.id === listing.id ? Object.assign({}, l, { status: 'available', inTalksWith: null, inTalksPhone: null }) : l;
+    });
+    var updatedBuyers = linkedBuyer
+      ? buyers.map(function(b) {
+          return b.id === linkedBuyer.id ? Object.assign({}, b, { status: 'looking', inTalksWith: null, inTalksPhone: null }) : b;
+        })
+      : buyers;
+    setListings(updatedListings);
+    setBuyers(updatedBuyers);
+    await saveAllListings(updatedListings);
+    if (linkedBuyer) {
+      for (var i = 0; i < updatedBuyers.length; i++) {
+        if (updatedBuyers[i].id === linkedBuyer.id) await saveBuyer(updatedBuyers[i]);
+      }
+    }
+    showNotification('Re-listed!');
+  }
 
   async function reListBuyer(buyer) {
     var updatedBuyers = buyers.map(function(b) { return b.id === buyer.id ? Object.assign({}, b, { status: 'looking', inTalksWith: null, inTalksPhone: null }) : b; });
@@ -966,13 +994,15 @@ export default function App() {
               <div ref={bottom} />
             </div>
             {err && <div style={{ margin: '0 18px 8px', padding: '9px 13px', background: '#fff0f0', border: '1px solid #ffcccc', borderRadius: 7, fontSize: 12, color: '#c00' }}>{'Error: ' + err}</div>}
-            <div style={{ padding: '0 18px 8px', display: 'flex', gap: 7, flexWrap: 'wrap' }}>
-              {['Pete has 80 Angus R2 steers 420kg Hawkes Bay $1100/hd', 'Johnson looking for 60 R2 steers around 400kg up to $1100', 'What would Angus R2 steers 420kg be worth?'].map(function(q) {
-                return <button key={q} onClick={function() { send(q); }} style={{ background: 'none', border: '1px solid #2d4a2d', color: '#2d4a2d', borderRadius: 20, padding: '4px 11px', fontSize: 11, cursor: 'pointer', fontFamily: 'Georgia,serif' }}>{q}</button>;
-              })}
-</div>
+            {isAdmin && (
+              <div style={{ padding: '0 18px 8px', display: 'flex', gap: 7, flexWrap: 'wrap' }}>
+                {['Pete has 80 Angus R2 steers 420kg Hawkes Bay $1100/hd', 'Johnson looking for 60 R2 steers around 400kg up to $1100', 'What would Angus R2 steers 420kg be worth?'].map(function(q) {
+                  return <button key={q} onClick={function() { send(q); }} style={{ background: 'none', border: '1px solid #2d4a2d', color: '#2d4a2d', borderRadius: 20, padding: '4px 11px', fontSize: 11, cursor: 'pointer', fontFamily: 'Georgia,serif' }}>{q}</button>;
+                })}
+              </div>
+            )}
             <div style={{ padding: '8px 18px 18px', display: 'flex', gap: 8 }}>
-              <input value={input} onChange={function(e) { setInput(e.target.value); }} onKeyDown={function(e) { if (e.key === 'Enter') send(); }} placeholder="Add stock or buyer — include name, age, sex and weight..." style={{ flex: 1, padding: '11px 14px', borderRadius: 9, border: '2px solid #2d4a2d', fontFamily: 'Georgia,serif', fontSize: 14, background: '#fff', outline: 'none', color: '#111' }} />
+              <input value={input} onChange={function(e) { setInput(e.target.value); }} onKeyDown={function(e) { if (e.key === 'Enter') send(); }} placeholder={isAdmin ? "Add stock or buyer — include name, age, sex and weight..." : "Send a message..."} style={{ flex: 1, padding: '11px 14px', borderRadius: 9, border: '2px solid #2d4a2d', fontFamily: 'Georgia,serif', fontSize: 14, background: '#fff', outline: 'none', color: '#111' }} />
               <button onClick={function() { send(); }} disabled={busy || !input.trim()} style={{ background: (busy || !input.trim()) ? '#999' : '#2d4a2d', color: '#e8dcc8', border: 'none', borderRadius: 9, padding: '11px 18px', cursor: (busy || !input.trim()) ? 'not-allowed' : 'pointer', fontFamily: 'Georgia,serif', fontSize: 14, fontWeight: 'bold' }}>Send</button>
             </div>
             <button onClick={function() { if (bottom.current) bottom.current.scrollIntoView({ behavior: 'smooth' }); }} style={{ position: 'fixed', bottom: 90, right: 20, width: 44, height: 44, borderRadius: '50%', background: '#2d4a2d', color: '#fff', border: 'none', fontSize: 20, cursor: 'pointer', zIndex: 50, boxShadow: '0 2px 8px rgba(0,0,0,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>↓</button>
@@ -1189,7 +1219,6 @@ export default function App() {
                 {inTalksBuyers.filter(function(b) {
                   return !inTalksListings.some(function(l) { return l.inTalksWith === b.name; });
                 }).map(function(b) {
-                  var cc = CAT_COLORS[b.category] || '#78909c';
                   return (
                     <div key={b.id} style={{ background: '#fff', borderRadius: 10, border: '2px solid #8e44ad', overflow: 'hidden' }}>
                       <div style={{ background: '#8e44ad', padding: '8px 16px', fontSize: 12, fontWeight: 'bold', color: '#fff', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
