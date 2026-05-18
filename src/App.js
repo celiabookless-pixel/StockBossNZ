@@ -621,10 +621,6 @@ export default function App() {
     setMsgs(newMsgs);
     await saveMessage(userMsg);
 
-    // FIX: non-admin users just save their message and stay on chat - no AI processing
-    if (!isAdmin) {
-      return;
-    }
 
     setBusy(true);
     try {
